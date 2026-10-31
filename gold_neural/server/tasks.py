@@ -707,6 +707,15 @@ def run_search(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]
     # "5 / 2 candidates".
     total_planned = len(candidates)
 
+    def json_row(row: dict[str, Any]) -> dict[str, Any]:
+        out = {key: value for key, value in row.items() if key != "_curve"}
+        score_value = out.get("score")
+        # A candidate below the trade floor scores -inf, which is not valid
+        # JSON and would break the browser. Rank on the float, publish null.
+        if score_value is not None and not math.isfinite(score_value):
+            out["score"] = None
+        return out
+
     def publish(status: str = "running") -> dict[str, Any]:
         ranked = sorted(
             [row for row in results if row.get("status") == "ok"],
@@ -730,19 +739,9 @@ def run_search(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]
             "elapsed_minutes": round((time.monotonic() - started) / 60.0, 1),
             "candidates_total": total_planned,
             "candidates_done": len(results),
-            "rows": [
-                {key: value for key, value in row.items() if key != "_curve"}
-                for row in results
-            ],
-            "leaderboard": [
-                {key: value for key, value in row.items() if key != "_curve"}
-                for row in ranked[:10]
-            ],
-            "best": (
-                {key: value for key, value in best.items() if key != "_curve"}
-                if best
-                else None
-            ),
+            "rows": [json_row(row) for row in results],
+            "leaderboard": [json_row(row) for row in ranked[:10]],
+            "best": json_row(best) if best else None,
             "best_curve": _downsample(best.get("_curve", []), 400) if best else [],
             "params": {
                 "total_minutes": search_config.total_minutes,

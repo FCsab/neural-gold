@@ -386,3 +386,9 @@ def test_search_sweep_runs_and_is_recorded(seeded_client: TestClient):
 
     live = seeded_client.get("/api/search/last", headers=AUTH).json()
     assert live["search_id"] == report["search_id"]
+
+    # The report is fetched by the browser, so it must be strict JSON.
+    import json as jsonlib
+
+    assert "Infinity" not in jsonlib.dumps(report)
+    assert "score" in report["rows"][0]

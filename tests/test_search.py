@@ -105,3 +105,13 @@ def test_candidate_keys_are_distinct():
     b = Candidate(k_up=8, k_down=3, holding=96, window=128)
     assert a.key() != b.key()
     assert "k_up=8" in a.label()
+
+
+def test_candidate_serialises_without_infinity():
+    """The report is parsed by a browser; JSON.parse rejects Infinity."""
+    import json
+
+    candidate = Candidate(k_up=8, k_down=3, holding=96, window=64, ratio_to_cost=float("inf"))
+    payload = candidate.to_dict()
+    assert payload["ratio_to_cost"] is None
+    assert "Infinity" not in json.dumps(payload)

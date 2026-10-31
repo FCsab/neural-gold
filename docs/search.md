@@ -58,10 +58,14 @@ at all. It only runs if time remains.
 
 ## Reading the leaderboard
 
-- **validation** — the return the ranking is based on. Optimistic, because the
+- **score** — the ranking key, shown as a percentage:
+  `validation return − ¼ × max drawdown`. Two candidates with the same return
+  are not equal if one got there through a deeper drawdown. It is a ranking
+  number, not a P&L.
+- **validation** — the return that feeds the score. Optimistic, because the
   settings were chosen looking at it.
 - **trades** — how many round trips produced that number. Fewer than 20 and
-  the candidate is scored as unusable, whatever the return says.
+  the candidate is unranked (shown as `—`), whatever the return says.
 - **test** — data the model never trained on and that did not influence the
   choice. This is the number to believe.
 

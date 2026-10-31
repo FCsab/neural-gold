@@ -1489,8 +1489,14 @@ function renderSearch() {
         const validation = row.validation.metrics;
         const test = row.test.metrics;
         const cls = (value) => (value >= 0 ? "pos" : "neg");
+        const scoreCell =
+          row.score === null || row.score === undefined
+            ? '<td class="num muted" title="fewer than 20 trades, so it is not ranked">—</td>'
+            : `<td class="num ${cls(row.score)}" title="validation return minus a quarter of its max drawdown">${(
+                row.score * 100
+              ).toFixed(1)}%</td>`;
         return (
-          `<tr><td class="num">${fmtInt(row.rank)}</td>` +
+          `<tr><td class="num">${fmtInt(row.rank)}</td>` + scoreCell +
           `<td class="num">${candidate.k_up}</td><td class="num">${candidate.k_down}</td>` +
           `<td class="num">${fmtInt(candidate.holding)}</td><td class="num">${fmtInt(candidate.window)}</td>` +
           `<td class="num ${cls(validation.total_return)}">${fmtPct(validation.total_return, 2)}</td>` +
@@ -1500,7 +1506,9 @@ function renderSearch() {
       })
       .join("");
     table.innerHTML =
-      '<thead><tr><th class="num">#</th><th class="num">target x</th><th class="num">stop x</th>' +
+      '<thead><tr><th class="num">#</th>' +
+      '<th class="num" title="validation return minus a quarter of its max drawdown — the ranking key">score</th>' +
+      '<th class="num">target x</th><th class="num">stop x</th>' +
       '<th class="num">hold</th><th class="num">window</th><th class="num">validation</th>' +
       '<th class="num">trades</th><th class="num">test</th></tr></thead>' +
       `<tbody>${body}</tbody>`;

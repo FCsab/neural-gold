@@ -47,6 +47,7 @@ class Candidate:
         return f"k_up={self.k_up:g} · k_down={self.k_down:g} · hold={self.holding} · w={self.window}"
 
     def to_dict(self) -> dict[str, Any]:
+        ratio = self.ratio_to_cost
         return {
             "k_up": self.k_up,
             "k_down": self.k_down,
@@ -54,7 +55,9 @@ class Candidate:
             "window": self.window,
             "phase": self.phase,
             "target_bps": round(self.target_bps, 1),
-            "ratio_to_cost": round(self.ratio_to_cost, 2),
+            # None rather than Infinity: the report is parsed by a browser and
+            # JSON.parse rejects the non-standard Infinity literal.
+            "ratio_to_cost": round(ratio, 2) if math.isfinite(ratio) else None,
             "key": self.key(),
         }
 
