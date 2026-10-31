@@ -449,10 +449,12 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
     window = int(params.get("window", 64))
     train_config = training_module.TrainConfig(
         window=window,
-        epochs=int(params.get("epochs", 50)),
+        epochs=int(params.get("epochs", 0)),
         batch_size=int(params.get("batch_size", 256)),
         lr=float(params.get("lr", 3e-4)),
-        patience=int(params.get("patience", 5)),
+        dropout=float(params.get("dropout", 0.1)),
+        weight_decay=float(params.get("weight_decay", 1e-4)),
+        patience=int(params.get("patience", 0)),
         seed=int(params.get("seed", 7)),
         max_minutes=float(params["minutes"]) if params.get("minutes") else None,
         device=str(params.get("device", "auto")),

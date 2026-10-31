@@ -105,6 +105,8 @@ class TrainParams(BaseModel):
     window: int = Field(default=64, ge=8, le=512)
     batch_size: int = Field(default=256, ge=16, le=4096)
     lr: float = Field(default=3e-4, gt=0, le=1)
+    dropout: float = Field(default=0.1, ge=0.0, le=0.8)
+    weight_decay: float = Field(default=1e-4, ge=0.0, le=1.0)
     # 0 = no early stopping: a human ends the run.
     patience: int = Field(default=0, ge=0, le=1000)
     seed: int = Field(default=7, ge=0, le=2**31 - 1)

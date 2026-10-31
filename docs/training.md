@@ -167,6 +167,27 @@ defaults keep the cheaper pair (window 64, lr 3e-4) with patience 10, which
 gives a slow start room to recover without paying for 128-bar attention on
 every sample. Isolating one variable at a time is the way to move them again.
 
+A third variant added regularisation instead — dropout 0.3 and weight decay
+1e-3, since the training loss was falling while validation climbed:
+
+```
+best validation   1.0594 @ epoch 3
+balanced accuracy 0.3580
+constant-guess    0.3333
+```
+
+No better than the defaults (1.0571 / 0.3594). It did what regularisation is
+supposed to do — training loss fell more slowly — but the validation floor
+stayed where it was.
+
+Four configurations now sit within 0.7 points of each other: 0.3528, 0.3580,
+0.3594, and 0.3575 on the shorter history. **The cap is the information in the
+features, not the training recipe.** More epochs, a wider window, a smaller
+step, more regularisation and three times the history all left it there.
+
+Dropout and weight decay are exposed on `POST /api/train/start` for future
+experiments; they are not in the form because neither earned a place there.
+
 What the model does find: 51.5% of real targets against a 32% base rate, while
 losing the timeout class almost entirely (14.6% recall). Training loss falls
 monotonically as validation flattens and turns up — a small model beginning to
