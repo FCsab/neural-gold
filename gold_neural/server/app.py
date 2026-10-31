@@ -96,13 +96,15 @@ class BacktestParams(BaseModel):
 class TrainParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # None or 0 = no wall-clock limit: run until Stop is pressed.
-    minutes: float | None = Field(default=10.0, ge=0, le=1440)
-    epochs: int = Field(default=50, ge=1, le=100000)
-    window: int = Field(default=64, ge=8, le=512)
+    # None = run until early stopping or Stop is pressed. That is the intended
+    # default: a wall-clock cap that cuts a run before it converges is worse
+    # than no cap, and patience already bounds a healthy run.
+    minutes: float | None = Field(default=None, ge=0, le=1440)
+    epochs: int = Field(default=100, ge=1, le=100000)
+    window: int = Field(default=128, ge=8, le=512)
     batch_size: int = Field(default=256, ge=16, le=4096)
-    lr: float = Field(default=3e-4, gt=0, le=1)
-    patience: int = Field(default=5, ge=1, le=1000)
+    lr: float = Field(default=1e-4, gt=0, le=1)
+    patience: int = Field(default=10, ge=1, le=1000)
     seed: int = Field(default=7, ge=0, le=2**31 - 1)
     device: Literal["auto", "cpu"] = "auto"
 

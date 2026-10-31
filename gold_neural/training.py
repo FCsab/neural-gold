@@ -35,19 +35,24 @@ CLASSES = (-1, 0, 1)
 
 @dataclass(frozen=True)
 class TrainConfig:
-    window: int = 64
-    epochs: int = 50
+    # Defaults tuned on this data: train loss fell smoothly at 3e-4 while
+    # validation bounced, so the step size was too large; and a 64-bar window
+    # (~5 h at 5m) gave the model too little context to separate the classes.
+    window: int = 128
+    epochs: int = 100
     batch_size: int = 256
-    lr: float = 3e-4
+    lr: float = 1e-4
     weight_decay: float = 1e-4
     dropout: float = 0.1
     d_model: int = 64
     nhead: int = 4
     layers: int = 2
     dim_feedforward: int = 256
-    patience: int = 5
-    # None or 0 = no wall-clock limit (run until Stop or max epochs).
-    max_minutes: float | None = 10.0
+    # Patience is the real bound on a healthy run; 10 pairs with the slower
+    # learning rate so a run is not cut off before it has converged.
+    patience: int = 10
+    # None = no wall-clock limit (run until Stop or the epoch/patience bound).
+    max_minutes: float | None = None
     seed: int = 7
     num_threads: int = 0  # 0 = let torch decide
     device: str = "auto"
