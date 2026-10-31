@@ -14,19 +14,36 @@ curl -k -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   https://127.0.0.1:8443/api/train/start
 ```
 
-Two ways to bound a run, and you can use either or both:
+**The default is: start it and walk away.** Leave the time limit empty, set
+epochs to 0 and patience to 0, and the run continues until you press Stop.
 
-- **minutes** — wall-clock budget. When it expires the loop stops at the next
-  batch boundary, evaluates the test slice, and writes a checkpoint.
-- **max epochs** — the classic bound.
+What keeps that safe:
 
-Leave **minutes blank** (or `null` in the API) and the run continues until you
-press **Stop**. Stop is cooperative: the child checks the flag between
-batches, so it exits within one batch, not one epoch. Whatever it learned is
-saved.
+- **The best weights are written as they appear.** Every time validation loss
+  improves, the checkpoint is saved to `v<epoch>.pt`. Stop, a crash, or a
+  server restart loses at most the epoch in flight — not the run.
+- **Stop is cooperative and immediate.** The child checks the flag between
+  batches, so it exits within one batch and writes the final metrics for the
+  best checkpoint it has.
+- **The live line tells you when to stop.** It shows
+  `epoch 42 · val 1.0642 · best 1.0617@6 · 36 since best · lr 1.2e-4`. When
+  "since best" climbs into the tens, the run has plateaued and pressing Stop
+  costs nothing.
 
-Either way you get a model. A time-boxed or stopped run is a *stopped* run,
-not a failed one: the checkpoint, metrics, and registry row are all written.
+Either bound still works if you want it: **minutes** for a wall-clock budget,
+**epochs** for a fixed count, **patience** for automatic early stopping. All
+three default to off.
+
+A stopped or time-boxed run is a *stopped* run, not a failed one: the
+checkpoint, metrics and registry row are all written.
+
+## The learning-rate schedule
+
+Runs use a short linear warm-up (3 epochs) then cosine decay to 2% of the base
+rate. With an open-ended run the schedule is spread over 200 epochs, which
+means: if you stop early the rate is still high, and if you let it run the
+last epochs are spent at a small step, which is where a better minimum is
+usually found. A fixed epoch count uses that count as the horizon instead.
 
 ## Where it runs
 

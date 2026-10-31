@@ -134,3 +134,50 @@ def test_balanced_baseline_matches_a_constant_guess():
     assert metrics["balanced_accuracy"] == 0.3333
     assert metrics["beats_baseline"] is False
 
+
+def test_open_ended_run_stops_only_when_asked(prepared, tmp_path):
+    """epochs=0 with patience=0 means: run until Stop, not until a counter."""
+    frame, features = prepared
+    seen = {"epochs": 0}
+
+    def progress(_payload):
+        seen["epochs"] += 1
+
+    result = train_model(
+        frame,
+        features,
+        _config(epochs=0, patience=0),
+        tmp_path,
+        progress=progress,
+        should_stop=lambda: seen["epochs"] >= 3,
+    )
+
+    assert result.stop_reason == "stopped"
+    assert result.status == "stopped"
+    assert result.epochs_done == 3
+    assert result.checkpoint_path is not None
+    assert Path(result.checkpoint_path).is_file()
+
+
+def test_checkpoint_is_written_at_the_best_epoch(prepared, tmp_path):
+    frame, features = prepared
+    result = train_model(frame, features, _config(epochs=3, patience=0), tmp_path)
+
+    assert result.metrics["best_epoch"] >= 1
+    files = sorted(path.name for path in tmp_path.glob("v*.pt"))
+    assert files, "training should leave at least one checkpoint"
+
+    payload = torch.load(result.checkpoint_path, weights_only=False)
+    assert payload["epoch"] == result.metrics["best_epoch"]
+    assert result.checkpoint_version == result.metrics["best_epoch"]
+
+
+def test_learning_rate_warms_up_then_decays(prepared, tmp_path):
+    frame, features = prepared
+    seen: list[dict] = []
+    train_model(frame, features, _config(epochs=8, patience=0), tmp_path, progress=seen.append)
+
+    rates = [entry["lr"] for entry in seen]
+    assert len(rates) == 8
+    assert rates[0] < rates[3], "warm-up should raise the rate over the first epochs"
+    assert rates[-1] < rates[3], "cosine decay should end below the peak"

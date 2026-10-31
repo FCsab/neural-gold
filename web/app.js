@@ -1247,11 +1247,11 @@ function trainParams() {
   const minutes = numberOr($("train-minutes").value);
   return {
     minutes: minutes === null ? null : minutes,
-    epochs: Number($("train-epochs").value) || 100,
+    epochs: numberOr($("train-epochs").value) ?? 0,
     window: Number($("train-window").value) || 64,
     batch_size: Number($("train-batch").value) || 256,
     lr: Number($("train-lr").value) || 0.0003,
-    patience: Number($("train-patience").value) || 10,
+    patience: numberOr($("train-patience").value) ?? 0,
     device: $("train-device").value,
   };
 }

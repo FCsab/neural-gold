@@ -353,11 +353,16 @@ def train_child(
         if kind == "progress":
             text = message.get("message") or "training"
             if manage_progress:
-                total = max(1, int(message.get("epochs_total", 1)))
-                ctx.update(
-                    message=text,
-                    progress=min(0.99, int(message.get("epoch", 0)) / total),
-                )
+                total = int(message.get("epochs_total") or 0)
+                if total > 0:
+                    ctx.update(
+                        message=text,
+                        progress=min(0.99, int(message.get("epoch", 0)) / total),
+                    )
+                else:
+                    # Open-ended run: keep the bar in its indeterminate state
+                    # rather than parking it at 99% forever.
+                    ctx.message(text)
             elif prefix:
                 ctx.message(f"{prefix} · {text}")
         elif kind == "result":

@@ -251,8 +251,8 @@
           <span class="hint">Leave empty to run until you press Stop.</span>
         </label>
         <label>Max epochs
-          <input id="train-epochs" type="number" step="1" min="1" max="100000" value="100" />
-          <span class="hint">One pass over the training data. Whichever limit hits first wins.</span>
+          <input id="train-epochs" type="number" step="1" min="0" max="100000" value="0" />
+          <span class="hint">0 = no epoch limit. One epoch is a full pass over the training data.</span>
         </label>
         <label>Window (bars)
           <input id="train-window" type="number" step="1" min="8" max="512" value="64" />
@@ -267,8 +267,8 @@
           <span class="hint">How far each step moves. 0.0003 fits faster; 0.0001 was tested and reached the same place slower.</span>
         </label>
         <label>Patience
-          <input id="train-patience" type="number" step="1" min="1" max="1000" value="10" />
-          <span class="hint">Stop after this many epochs without improvement. This is usually what ends a run.</span>
+          <input id="train-patience" type="number" step="1" min="0" max="1000" value="0" />
+          <span class="hint">0 = never stop on its own. Set it only if you want the run to end by itself.</span>
         </label>
         <label>Device
           <select id="train-device">
@@ -282,6 +282,12 @@
         <button class="primary" id="start-training">Start training</button>
         <button id="stop-training" disabled>Stop</button>
       </div>
+      <p class="muted small">
+        With the time limit empty, epochs 0 and patience 0, a run continues until
+        you press Stop. The best weights are written every time validation
+        improves, so stopping throws nothing away and a crash loses at most one
+        epoch.
+      </p>
     </div>
 
     <div class="card grow">

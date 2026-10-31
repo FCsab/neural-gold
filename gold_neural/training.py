@@ -40,7 +40,9 @@ class TrainConfig:
     # 1.0619) in 2.3x the wall clock, and scored no better on balanced
     # accuracy. Cheaper configuration wins until something moves the floor.
     window: int = 64
-    epochs: int = 100
+    # 0 = no epoch limit: the run continues until Stop is pressed. The best
+    # weights are checkpointed as they appear, so stopping costs nothing.
+    epochs: int = 0
     batch_size: int = 256
     lr: float = 3e-4
     weight_decay: float = 1e-4
@@ -49,10 +51,15 @@ class TrainConfig:
     nhead: int = 4
     layers: int = 2
     dim_feedforward: int = 256
-    # Patience is the real bound on a healthy run; 10 pairs with the slower
-    # learning rate so a run is not cut off before it has converged.
-    patience: int = 10
-    # None = no wall-clock limit (run until Stop or the epoch/patience bound).
+    # 0 = never stop early. Early stopping is off by default because the run
+    # is meant to be ended by a human watching the curve, not by a counter.
+    patience: int = 0
+    # Cosine decay to this fraction of the base rate. With an open-ended run
+    # the schedule is spread over 200 epochs; a fixed epoch count is used when
+    # one is set.
+    warmup_epochs: int = 3
+    min_lr_ratio: float = 0.02
+    # None = no wall-clock limit.
     max_minutes: float | None = None
     seed: int = 7
     num_threads: int = 0  # 0 = let torch decide
@@ -63,6 +70,12 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.window < 2:
             raise ValueError("window must be >= 2")
+        if self.epochs < 0:
+            raise ValueError("epochs must be >= 0 (0 means no limit)")
+        if self.patience < 0:
+            raise ValueError("patience must be >= 0 (0 means no early stopping)")
+        if self.warmup_epochs < 0:
+            raise ValueError("warmup_epochs must be >= 0")
         if not 0.3 <= self.train_frac <= 0.9:
             raise ValueError("train_frac must be within 0.3..0.9")
         if not 0.0 <= self.val_frac <= 0.5:
@@ -255,6 +268,34 @@ def train_model(
         else None
     )
 
+    total_epochs = config.epochs if config.epochs > 0 else None
+    schedule_horizon = total_epochs or max(200, config.warmup_epochs + 1)
+
+    def lr_at(index: int) -> float:
+        """Linear warmup, then cosine decay to ``min_lr_ratio`` of the base rate."""
+        if config.warmup_epochs and index < config.warmup_epochs:
+            return config.lr * (index + 1) / config.warmup_epochs
+        span = max(1, schedule_horizon - config.warmup_epochs)
+        ratio = min(1.0, max(0.0, (index - config.warmup_epochs) / span))
+        factor = config.min_lr_ratio + (1.0 - config.min_lr_ratio) * 0.5 * (
+            1.0 + math.cos(math.pi * ratio)
+        )
+        return config.lr * factor
+
+    def checkpoint_payload(extra_metrics: dict[str, Any], epoch_number: int) -> dict[str, Any]:
+        return {
+            "model_state": model.state_dict(),
+            "config": asdict(config),
+            "feature_names": list(feature_names),
+            "window": window,
+            "scaler": {"mean": mean.tolist(), "std": std.tolist()},
+            "label_order": list(CLASSES),
+            "metrics": extra_metrics,
+            "epoch": int(epoch_number),
+            "torch_version": torch.__version__,
+            "device": probe.device,
+        }
+
     best_state: dict[str, torch.Tensor] | None = None
     best_val = math.inf
     best_epoch = 0
@@ -277,13 +318,21 @@ def train_model(
                 predictions.append(logits.argmax(dim=1).cpu().numpy())
         return np.concatenate(predictions), total / len(rows)
 
-    for epoch in range(1, config.epochs + 1):
+    epoch = 0
+    while True:
+        if total_epochs is not None and epoch >= total_epochs:
+            break
+        epoch += 1
         if should_stop and should_stop():
             stop_reason = "stopped"
             break
         if deadline is not None and time.monotonic() >= deadline:
             stop_reason = "time_budget"
             break
+
+        current_lr = lr_at(epoch - 1)
+        for group in optimizer.param_groups:
+            group["lr"] = current_lr
 
         model.train()
         order = np.random.permutation(train_rows)
@@ -340,23 +389,13 @@ def train_model(
             "train_loss": round(train_loss, 6),
             "val_loss": round(val_loss, 6),
             "val_accuracy": round(val_accuracy, 4),
+            "lr": round(current_lr, 8),
             "elapsed_s": round(time.monotonic() - started, 2),
         }
         history.append(record)
 
-        if progress is not None:
-            progress(
-                {
-                    **record,
-                    "epochs_total": config.epochs,
-                    "message": (
-                        f"epoch {epoch}/{config.epochs} · "
-                        f"val_loss {val_loss:.4f} · val_acc {val_accuracy:.3f}"
-                    ),
-                }
-            )
-
-        if val_loss < best_val - 1e-5:
+        improved = val_loss < best_val - 1e-5
+        if improved:
             best_val = val_loss
             best_epoch = epoch
             best_state = {
@@ -364,11 +403,42 @@ def train_model(
                 for key, value in model.state_dict().items()
             }
             stale = 0
+            # Write the best weights the moment they appear. A run that is
+            # stopped, killed or restarted then keeps everything it learned.
+            _save_checkpoint(
+                checkpoint_dir / f"v{epoch}.pt",
+                checkpoint_payload(
+                    {
+                        "val_loss": round(val_loss, 6),
+                        "val_accuracy": round(val_accuracy, 4),
+                    },
+                    epoch,
+                ),
+            )
         else:
             stale += 1
-            if stale >= config.patience:
-                stop_reason = "early_stopping"
-                break
+
+        if progress is not None:
+            label = f"{epoch}/{total_epochs}" if total_epochs else str(epoch)
+            message = f"epoch {label} · val {val_loss:.4f}"
+            if best_epoch:
+                message += f" · best {best_val:.4f}@{best_epoch}"
+                if epoch > best_epoch:
+                    message += f" · {epoch - best_epoch} since best"
+            message += f" · lr {current_lr:.1e}"
+            progress(
+                {
+                    **record,
+                    "epochs_total": total_epochs or 0,
+                    "best_epoch": float(best_epoch),
+                    "epochs_since_best": float(epoch - best_epoch),
+                    "message": message,
+                }
+            )
+
+        if not improved and config.patience and stale >= config.patience:
+            stop_reason = "early_stopping"
+            break
 
     if epochs_done == 0:
         return TrainResult(
@@ -407,21 +477,10 @@ def train_model(
         4,
     )
 
-    version = max(epochs_done, 1)
+    # Re-write the winning checkpoint with the full test metrics attached.
+    version = int(best_epoch or epochs_done or 1)
     checkpoint_path = checkpoint_dir / f"v{version}.pt"
-    payload = {
-        "model_state": model.state_dict(),
-        "config": asdict(config),
-        "feature_names": list(feature_names),
-        "window": window,
-        "scaler": {"mean": mean.tolist(), "std": std.tolist()},
-        "label_order": list(CLASSES),
-        "metrics": metrics,
-        "epoch": int(best_epoch or epochs_done),
-        "torch_version": torch.__version__,
-        "device": probe.device,
-    }
-    _save_checkpoint(checkpoint_path, payload)
+    _save_checkpoint(checkpoint_path, checkpoint_payload(metrics, version))
 
     duration = time.monotonic() - started
     status = "ok" if stop_reason in {"completed", "early_stopping"} else "stopped"
