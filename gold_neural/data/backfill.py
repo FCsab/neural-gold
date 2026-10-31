@@ -42,6 +42,40 @@ class BackfillStats:
         )
 
 
+def plan_missing_windows(
+    coverage: Coverage,
+    interval_ms: int,
+    *,
+    years: float,
+    now_ms: int,
+) -> list[tuple[int, int]]:
+    """Return the windows needed so the store holds ``years`` of history.
+
+    ``years`` means "at least this much history ending now", not "add this
+    much at the end". A store with two years that is asked for six gets one
+    window extending backwards and one topping up the tail — the middle is
+    never re-downloaded, so the call stays cheap and idempotent.
+
+    Returns an empty list when the store already covers the request.
+    """
+    target_start = now_ms - int(years * 365.25 * DAY_MS)
+    target_start -= target_start % interval_ms
+
+    if coverage.empty:
+        return [(target_start, now_ms)]
+
+    windows: list[tuple[int, int]] = []
+
+    if target_start < int(coverage.start_ms):
+        windows.append((target_start, int(coverage.start_ms) - interval_ms))
+
+    tail_start = int(coverage.end_ms) + interval_ms
+    if tail_start < now_ms:
+        windows.append((tail_start, now_ms))
+
+    return windows
+
+
 def plan_missing_range(
     coverage: Coverage,
     interval_ms: int,
@@ -49,20 +83,9 @@ def plan_missing_range(
     years: float,
     now_ms: int,
 ) -> tuple[int, int] | None:
-    """Return the [start, end] window still missing from the store.
-
-    An empty store gets ``years`` of history. A populated store resumes
-    from one bar after its last stored bar, so re-running backfill is
-    idempotent and cheap.
-    """
-    if coverage.empty:
-        start = now_ms - int(years * 365.25 * DAY_MS)
-        return start - (start % interval_ms), now_ms
-
-    start = int(coverage.end_ms) + interval_ms
-    if start >= now_ms:
-        return None
-    return start, now_ms
+    """The first window from :func:`plan_missing_windows`, for single-shot callers."""
+    windows = plan_missing_windows(coverage, interval_ms, years=years, now_ms=now_ms)
+    return windows[0] if windows else None
 
 
 async def backfill(
@@ -75,26 +98,25 @@ async def backfill(
     flush_bars: int = 10_000,
     progress: Callable[[BackfillStats], None] | None = None,
 ) -> BackfillStats:
-    """Download bars into the Parquet store, resuming from what is on disk."""
+    """Download bars until the store holds at least ``years`` of history."""
     store = store_from_config(config)
     interval_ms = interval_to_ms(config.exchange.interval)
     now_ms = int(time.time() * 1000)
     stop_at = now_ms if end_ms is None else min(int(end_ms), now_ms)
 
     if start_ms is None:
-        window = plan_missing_range(
+        windows = plan_missing_windows(
             store.coverage(), interval_ms, years=years, now_ms=stop_at
         )
-        if window is None:
-            stats = BackfillStats(elapsed_s=0.0)
+        if not windows:
             coverage = store.coverage()
-            stats.start_ms, stats.end_ms = coverage.start_ms, coverage.end_ms
-            return stats
-        start_at, stop_at = window
+            return BackfillStats(
+                start_ms=coverage.start_ms, end_ms=coverage.end_ms, elapsed_s=0.0
+            )
     else:
-        start_at = int(start_ms)
+        windows = [(int(start_ms), stop_at)]
 
-    stats = BackfillStats(start_ms=start_at, end_ms=stop_at)
+    stats = BackfillStats(start_ms=min(window[0] for window in windows))
     began = time.monotonic()
     buffer: list[pd.DataFrame] = []
     buffered_rows = 0
@@ -104,8 +126,8 @@ async def backfill(
         if not buffer:
             return
         page = pd.concat(buffer, ignore_index=True)
-        # write_bars returns the row count of every touched partition (it
-        # rewrites whole months), which is not "new bars". Count what we
+        # write_bars reports the row count of every touched partition (it
+        # rewrites whole months), which is not "new bars". Count what was
         # actually handed over instead.
         store.write_bars(page)
         stats.bars_written += len(page)
@@ -115,44 +137,46 @@ async def backfill(
     async with make_client(
         config.exchange.base_url, config.exchange.request_timeout_s
     ) as client:
-        cursor = start_at
-        while cursor <= stop_at:
-            page = await fetch_klines(
-                client,
-                symbol=config.exchange.symbol,
-                interval=config.exchange.interval,
-                start_ms=cursor,
-                end_ms=stop_at,
-                limit=page_limit,
-                max_retries=config.exchange.max_retries,
-            )
-            stats.pages += 1
+        for window_start, window_stop in windows:
+            log.info("backfill window %d -> %d (ms)", window_start, window_stop)
+            cursor = window_start
+            while cursor <= window_stop:
+                page = await fetch_klines(
+                    client,
+                    symbol=config.exchange.symbol,
+                    interval=config.exchange.interval,
+                    start_ms=cursor,
+                    end_ms=window_stop,
+                    limit=page_limit,
+                    max_retries=config.exchange.max_retries,
+                )
+                stats.pages += 1
 
-            if page.empty:
-                break
+                if page.empty:
+                    break
 
-            closed = page[page["close_time"] < now_ms]
-            stats.bars_skipped_unclosed += len(page) - len(closed)
-            stats.bars_fetched += len(closed)
+                closed = page[page["close_time"] < now_ms]
+                stats.bars_skipped_unclosed += len(page) - len(closed)
+                stats.bars_fetched += len(closed)
 
-            if not closed.empty:
-                buffer.append(closed[BAR_COLUMNS])
-                buffered_rows += len(closed)
-                stats.end_ms = int(closed["open_time"].iloc[-1])
+                if not closed.empty:
+                    buffer.append(closed[BAR_COLUMNS])
+                    buffered_rows += len(closed)
+                    stats.end_ms = int(closed["open_time"].iloc[-1])
 
-            last_open = int(page["open_time"].iloc[-1])
-            if last_open < cursor:
-                log.warning("exchange returned bars before the cursor; stopping")
-                break
-            cursor = last_open + interval_ms
+                last_open = int(page["open_time"].iloc[-1])
+                if last_open < cursor:
+                    log.warning("exchange returned bars before the cursor; stopping")
+                    break
+                cursor = last_open + interval_ms
 
-            if buffered_rows >= flush_bars:
-                flush()
+                if buffered_rows >= flush_bars:
+                    flush()
 
-            if progress is not None and stats.pages % 10 == 0:
-                progress(stats)
+                if progress is not None and stats.pages % 10 == 0:
+                    progress(stats)
 
-            await asyncio.sleep(config.exchange.min_request_spacing_s)
+                await asyncio.sleep(config.exchange.min_request_spacing_s)
 
     flush()
     stats.elapsed_s = time.monotonic() - began

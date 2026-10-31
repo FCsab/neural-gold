@@ -1,6 +1,12 @@
 """Historical bar ingestion."""
 
-from .backfill import BackfillStats, backfill, plan_missing_range, verify_bars
+from .backfill import (
+    BackfillStats,
+    backfill,
+    plan_missing_range,
+    plan_missing_windows,
+    verify_bars,
+)
 from .store import BAR_COLUMNS, BarStore, Coverage, store_from_config
 
 __all__ = [
@@ -10,6 +16,7 @@ __all__ = [
     "Coverage",
     "backfill",
     "plan_missing_range",
+    "plan_missing_windows",
     "store_from_config",
     "verify_bars",
 ]

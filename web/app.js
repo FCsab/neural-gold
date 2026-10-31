@@ -1443,9 +1443,15 @@ function renderSearch() {
     return;
   }
 
-  const running = report.status === "running" || jobRunning;
-  badge.textContent = running ? "running" : report.status;
-  badge.className = "badge " + (report.status === "done" && !running ? "ok" : running ? "amber" : "");
+  // A sweep writes "running" to disk as it goes. If the server restarts, the
+  // report keeps saying "running" forever because nothing is left to rewrite
+  // it — say "interrupted" rather than pretending a dead sweep is alive.
+  const stale = report.status === "running" && !jobRunning;
+  const running = (report.status === "running" && !stale) || jobRunning;
+  badge.textContent = stale ? "interrupted" : running ? "running" : report.status;
+  badge.className =
+    "badge " +
+    (report.status === "done" && !running ? "ok" : stale ? "bad" : running ? "amber" : "");
 
   const rows = [
     [
@@ -1466,9 +1472,11 @@ function renderSearch() {
     .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
     .join("");
 
-  $("search-note").textContent =
-    `Candidates must aim at least ${fmtNum(report.round_trip_cost_bps * 2.5, 0)} bps ` +
-    `(2.5x the ${fmtNum(report.round_trip_cost_bps, 0)} bps round trip) or they are skipped.`;
+  $("search-note").textContent = stale
+    ? "The sweep is no longer running — the server restarted while it was going. " +
+      "The candidates below are complete; start a new sweep to continue."
+    : `Candidates must aim at least ${fmtNum(report.round_trip_cost_bps * 2.5, 0)} bps ` +
+      `(2.5x the ${fmtNum(report.round_trip_cost_bps, 0)} bps round trip) or they are skipped.`;
 
   $("search-best").textContent = report.best
     ? report.best.test.verdict
