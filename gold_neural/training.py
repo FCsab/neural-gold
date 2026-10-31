@@ -127,6 +127,13 @@ def _metrics(
     support_counts = np.bincount((y_true + 1).astype(int), minlength=3)
     baseline = float(support_counts.max() / len(y_true)) if len(y_true) else 0.0
 
+    # A constant predictor that always says the majority class gets that class
+    # right every time and the others never, so its *balanced* accuracy is
+    # 1 / (number of classes present). Comparing balanced accuracy against the
+    # plain majority share would be comparing two different scales.
+    present = int((support_counts > 0).sum())
+    baseline_balanced = 1.0 / present if present else 0.0
+
     long_mask = y_pred == 1
     stop_mask = y_pred == -1
     long_return = float(returns[long_mask].mean()) if long_mask.any() else None
@@ -141,7 +148,8 @@ def _metrics(
         "accuracy": round(accuracy, 4),
         "balanced_accuracy": round(balanced, 4),
         "baseline_accuracy": round(baseline, 4),
-        "beats_baseline": bool(balanced > baseline + 0.02),
+        "baseline_balanced_accuracy": round(baseline_balanced, 4),
+        "beats_baseline": bool(balanced > baseline_balanced + 0.05),
         "expected_return_long": None if long_return is None else round(long_return, 6),
         "expected_return_stop": None if stop_return is None else round(stop_return, 6),
         "signal_edge": None if edge is None else round(edge, 6),

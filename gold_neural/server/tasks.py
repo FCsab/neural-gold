@@ -544,8 +544,10 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         f"{result_payload.get('duration_s')}s on {result_payload.get('device')}"
     )
     ctx.log(
-        f"balanced_accuracy {metrics.get('balanced_accuracy')} vs baseline "
-        f"{metrics.get('baseline_accuracy')} · signal_edge {metrics.get('signal_edge')}"
+        f"balanced_accuracy {metrics.get('balanced_accuracy')} vs constant guess "
+        f"{metrics.get('baseline_balanced_accuracy')} "
+        f"(plain accuracy {metrics.get('accuracy')} vs "
+        f"{metrics.get('baseline_accuracy')}) · signal_edge {metrics.get('signal_edge')}"
     )
 
     return {

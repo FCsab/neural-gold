@@ -649,37 +649,72 @@ function renderIntro() {
   $("intro").hidden = hidden;
 }
 
+/** Balanced accuracy of a constant predictor: 1 / number of classes present. */
+function balancedBaseline(metrics) {
+  if (metrics.baseline_balanced_accuracy != null) {
+    return Number(metrics.baseline_balanced_accuracy);
+  }
+  const perClass = metrics.per_class;
+  if (perClass) {
+    const present = Object.values(perClass).filter((row) => (row.support || 0) > 0).length;
+    if (present) return 1 / present;
+  }
+  // Older payloads only carry the plain accuracy; better than nothing.
+  return Number(metrics.baseline_accuracy);
+}
+
 function verdictFor(metrics) {
   if (!metrics || metrics.balanced_accuracy == null) return null;
   const balanced = Number(metrics.balanced_accuracy);
-  const baseline = Number(metrics.baseline_accuracy);
+  // Compare like with like: a constant predictor scores 1/3 on *balanced*
+  // accuracy, not the 48% plain accuracy of always answering the big class.
+  const baseline = balancedBaseline(metrics);
   if (!Number.isFinite(balanced) || !Number.isFinite(baseline)) return null;
-  const delta = ((balanced - baseline) * 100).toFixed(1);
+  const delta = (balanced - baseline) * 100;
+  const points = `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}`;
 
-  if (balanced > baseline + 0.02) {
+  if (delta >= 5) {
     return {
       tone: "ok",
-      html: `<strong>Better than guessing.</strong> Balanced accuracy ${fmtPct(
+      html: `<strong>Better than a constant guess.</strong> Balanced accuracy ${fmtPct(
         balanced,
         1
-      )} beats the ${fmtPct(baseline, 1)} you get from always picking the most common outcome, by ${delta} points. That is a hint, not proof — check the edge and confirm on data the model has never seen.`,
-    };
-  }
-  if (balanced < baseline - 0.02) {
-    return {
-      tone: "bad",
-      html: `<strong>No edge yet.</strong> Balanced accuracy ${fmtPct(
-        balanced,
-        1
-      )} is below the ${fmtPct(
+      )} against ${fmtPct(
         baseline,
         1
-      )} of always guessing the most common outcome (${delta} points). Short runs look like this. More time, a longer window, or different label levels are the usual next moves.`,
+      )} for always answering one outcome (${points} points). Still a hint, not proof — costs decide in the backtest.`,
+    };
+  }
+  if (delta >= 2) {
+    return {
+      tone: "",
+      html: `<strong>Marginally better than a constant guess.</strong> Balanced accuracy ${fmtPct(
+        balanced,
+        1
+      )} against ${fmtPct(
+        baseline,
+        1
+      )} (${points} points). A gap this small rarely survives fees — check the backtest before believing it.`,
+    };
+  }
+  if (delta <= -2) {
+    return {
+      tone: "bad",
+      html: `<strong>Worse than a constant guess.</strong> Balanced accuracy ${fmtPct(
+        balanced,
+        1
+      )} against ${fmtPct(
+        baseline,
+        1
+      )} (${points} points). That points at the setup or the labels, not just at training time.`,
     };
   }
   return {
     tone: "",
-    html: `<strong>Level with guessing.</strong> Not worse than the baseline, and not useful yet. More epochs or different label settings may change that.`,
+    html: `<strong>At chance.</strong> Balanced accuracy ${fmtPct(
+      balanced,
+      1
+    )} against ${fmtPct(baseline, 1)} for a constant guess (${points} points). No usable pattern found yet.`,
   };
 }
 
@@ -1100,8 +1135,9 @@ function renderTrainResult(result, options = {}) {
 
   const summary = [
     ["Balanced accuracy", fmtNum(metrics.balanced_accuracy, 3)],
-    ["Always-guess baseline", fmtNum(metrics.baseline_accuracy, 3)],
+    ["Constant-guess baseline", fmtNum(balancedBaseline(metrics), 3)],
     ["Plain accuracy", fmtNum(metrics.accuracy, 3)],
+    ["Always-guess accuracy", fmtNum(metrics.baseline_accuracy, 3)],
     ["Edge (buy minus stop)", metrics.signal_edge == null ? "–" : fmtPct(metrics.signal_edge)],
     [
       "Bars it wanted to buy",
@@ -1158,8 +1194,9 @@ function renderTrainResult(result, options = {}) {
           .join("")}</dl>
         <p class="hint" style="margin-top:12px">
           Balanced accuracy is the average recall across the three outcomes, so a
-          model cannot win by always guessing the common one. Edge is the average
-          return when it said “buy” minus the average when it said “stop”, before fees.
+          model cannot win by always answering the same one. Compare it with the
+          constant-guess line, not with plain accuracy. Edge is the average return
+          when it said “buy” minus the average when it said “stop”, before fees.
         </p>
       </div>
       <div>

@@ -75,36 +75,61 @@ view, not a 1 GB copy.
 ## What a run reports
 
 Per-class precision / recall / F1, a 3×3 confusion matrix, balanced accuracy,
-the majority-class baseline, accuracy, expected realised return per predicted
-class, the signal edge (mean return of longs minus mean return of stops), long
-coverage, and the validation-loss curve.
+its constant-guess baseline, plain accuracy, expected realised return per
+predicted class, the signal edge (mean return of longs minus mean return of
+stops), long coverage, and the validation-loss curve.
 
 Accuracy alone is never the promotion criterion: a model that always predicts
-"timeout" can look respectable and have no edge. A run is marked **candidate**
-only when it beats the majority baseline on balanced accuracy by more than
-2 points; anything else lands in the registry as **draft**, with its metrics
-attached so the result is inspectable rather than discarded.
+"timeout" can look respectable and have no edge.
+
+The comparison has to be like with like. Balanced accuracy is the mean recall
+across the three outcomes, so a constant predictor that always answers one
+class scores **1/3** on it — not the 48% plain accuracy that same predictor
+scores when one class holds 48% of the rows. Comparing balanced accuracy
+against the plain majority share (an earlier version of this code did exactly
+that) understates every model by 15 points and turns "at chance" into
+"catastrophically wrong".
+
+A run is marked **candidate** only when it beats the constant guess on
+balanced accuracy by more than 5 points; anything less lands in the registry
+as **draft**, with its metrics attached so the result is inspectable rather
+than discarded.
 
 ## Measured on this machine
 
 Two-minute budget, 210,322 rows, window 64, batch 512, 21 features, GPU:
 
 ```
-device            cuda (AMD Radeon Graphics, probe passed)
-epochs            10 in 121.2 s
-balanced accuracy 0.403
-baseline          0.485   <- majority class share
-accuracy          0.417
-signal edge       +0.006%
-long coverage     45.6%
-test rows         31,549
-parameters        105,795
-status            draft (did not beat baseline)
+device               cuda (AMD Radeon Graphics, probe passed)
+epochs               10 in 121.2 s   (batch 512)
+balanced accuracy    0.403
+constant-guess       0.333
+plain accuracy       0.417
+always-guess accuracy 0.485
+signal edge          +0.006%
+test rows            31,549
+parameters           105,795
+status               draft
 ```
 
-That is the honest result of two minutes on a near-random-walk target: the
-plumbing works, the edge is not there yet. The registry keeps the model as a
-draft with its metrics, rather than pretending it passed.
+A second run with `max_holding_bars=24`, batch 256, patience 8:
+
+```
+epochs               11 in 328 s, best epoch 3
+balanced accuracy    0.3575
+constant-guess       0.3333   (+2.4 points -> marginal)
+plain accuracy       0.4038
+always-guess         0.4838
+recall   stop 41.2%  timeout 14.6%  target 51.5%
+status               draft
+```
+
+Read together: the model finds *something* (51.5% of real targets versus a
+32% base rate) but loses the timeout class almost entirely, and the balanced
+score lands 2 points above a constant guess. Training loss falls monotonically
+while validation loss bottoms out at epoch 3 and climbs — a small model
+starting to memorise, not an undertrained one. More epochs do not fix that;
+a lower learning rate, a wider window, or more history do.
 
 Stopping an unbounded run: start → 1 epoch in 20 s → **Stop** → checkpoint
 written, `stop_reason=stopped`, job status `stopped`.

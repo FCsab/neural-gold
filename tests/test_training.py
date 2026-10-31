@@ -56,6 +56,7 @@ def test_training_completes_and_writes_checkpoint(prepared, tmp_path):
     assert set(metrics["per_class"]) == {"-1", "0", "1"}
     assert 0.0 <= metrics["balanced_accuracy"] <= 1.0
     assert 0.0 <= metrics["baseline_accuracy"] <= 1.0
+    assert 0.0 <= metrics["baseline_balanced_accuracy"] <= 1.0
 
     payload = torch.load(result.checkpoint_path, weights_only=False)
     assert payload["feature_names"] == features
@@ -116,3 +117,20 @@ def test_invalid_window_rejected():
 def test_invalid_split_rejected():
     with pytest.raises(ValueError):
         TrainConfig(train_frac=0.95, val_frac=0.1)
+
+
+def test_balanced_baseline_matches_a_constant_guess():
+    """A constant predictor scores 1/3 on balanced accuracy, not 50%."""
+    import numpy as np
+
+    from gold_neural.training import _metrics
+
+    y_true = np.array([-1] * 50 + [0] * 30 + [1] * 20)
+    y_pred = np.full(100, -1)
+    metrics = _metrics(y_true, y_pred, np.zeros(100))
+
+    assert metrics["baseline_accuracy"] == 0.5
+    assert metrics["baseline_balanced_accuracy"] == 0.3333
+    assert metrics["balanced_accuracy"] == 0.3333
+    assert metrics["beats_baseline"] is False
+
