@@ -49,6 +49,7 @@
   <button data-panel="dataset"><span class="tab-num">2</span>Labels &amp; dataset<span class="tab-dot" data-dot="dataset"></span></button>
   <button data-panel="leakage"><span class="tab-num">3</span>Look-ahead check<span class="tab-dot" data-dot="leakage"></span></button>
   <button data-panel="training"><span class="tab-num">4</span>Training<span class="tab-dot" data-dot="training"></span></button>
+  <button data-panel="backtest"><span class="tab-num">5</span>Backtest<span class="tab-dot" data-dot="backtest"></span></button>
   <span class="tabs-gap"></span>
   <button data-panel="exchange" class="tab-secondary">Exchange rules</button>
   <button data-panel="console" class="tab-secondary">Activity<span class="badge hidden" id="job-badge">0</span></button>
@@ -343,6 +344,62 @@
       <pre id="log" class="log">Pick a job on the left to read its log.</pre>
     </div>
   </div>
+</section>
+
+
+<!-- ------------------------------------------------------------- backtest -->
+<section class="panel" id="panel-backtest">
+  <p class="panel-intro">
+    Replays the most recent 15% of the data — the part the model never saw
+    during training — and turns its signals into trades. Fees and slippage are
+    charged on both sides, and the result is set against simply holding PAXG
+    over the same window.
+  </p>
+
+  <div class="row">
+    <div class="card">
+      <div class="card-head"><h2>Costs and size</h2></div>
+      <form id="backtest-form" class="grid-form">
+        <label>Starting money (USDT)
+          <input id="bt-equity" type="number" step="100" min="100" value="10000" />
+          <span class="hint">Everything is measured from here.</span>
+        </label>
+        <label>Fees (bps per side)
+          <input id="bt-fees" type="number" step="1" min="0" max="100" value="10" />
+          <span class="hint">10 bps = 0.10% each way, Binance spot with no discount.</span>
+        </label>
+        <label>Slippage (bps per side)
+          <input id="bt-slip" type="number" step="1" min="0" max="100" value="2" />
+          <span class="hint">How much worse than the quoted price you expect to fill.</span>
+        </label>
+        <label>Minimum confidence
+          <input id="bt-conf" type="number" step="0.05" min="0" max="0.9" value="0" />
+          <span class="hint">Skip signals the model is unsure about. 0 = take every long signal.</span>
+        </label>
+      </form>
+      <div class="controls">
+        <button class="primary" id="run-backtest">Run the backtest</button>
+      </div>
+      <p class="muted small">Uses the newest model that has a checkpoint.</p>
+    </div>
+
+    <div class="card grow">
+      <div class="card-head"><h2>What it would have made</h2><span class="badge" id="bt-badge">not run</span></div>
+      <div id="bt-verdict"></div>
+      <dl class="stats" id="bt-stats"><dt>—</dt><dd>No backtest yet. Press “Run the backtest”.</dd></dl>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Equity</h2><span class="muted small" id="bt-meta"></span></div>
+    <div id="bt-chart" class="chart"></div>
+    <p class="hint" style="margin-top:8px">Gold line: the model's equity after each trade, costs included. Grey dashed line: the same money simply holding PAXG.</p>
+  </div>
+
+  <details class="card">
+    <summary>Recent trades <span class="muted small" id="bt-trade-count"></span></summary>
+    <div class="table-wrap"><table class="table" id="bt-trades"></table></div>
+  </details>
 </section>
 
 </main>

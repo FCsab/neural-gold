@@ -298,3 +298,59 @@ def test_stop_requests_are_honoured(seeded_client: TestClient):
 
 def test_stop_unknown_job_is_409(client: TestClient):
     assert client.post("/api/jobs/nope/stop", headers=AUTH).status_code == 409
+
+
+# -- backtest --------------------------------------------------------------
+def test_backtest_requires_dataset(client: TestClient):
+    response = client.post("/api/backtest/run", headers=AUTH, json={})
+    assert response.status_code == 409
+
+
+def test_backtest_without_a_model_fails_clearly(seeded_client: TestClient):
+    _build_dataset(seeded_client)
+    job_id = seeded_client.post("/api/backtest/run", headers=AUTH, json={}).json()["job_id"]
+    job = wait_for_job(seeded_client, job_id, timeout=120)
+    assert job["status"] == "failed"
+    assert "model" in (job["error"] or "").lower()
+
+
+def test_backtest_after_training_produces_an_equity_curve(seeded_client: TestClient):
+    _build_dataset(seeded_client)
+
+    training = seeded_client.post(
+        "/api/train/start",
+        headers=AUTH,
+        json={
+            "minutes": 3,
+            "epochs": 1,
+            "window": 16,
+            "batch_size": 128,
+            "patience": 5,
+            "device": "cpu",
+        },
+    )
+    assert training.status_code == 200, training.text
+    assert wait_for_job(seeded_client, training.json()["job_id"], timeout=600)["status"] == "ok"
+
+    response = seeded_client.post(
+        "/api/backtest/run",
+        headers=AUTH,
+        json={"initial_equity": 1000, "fee_bps": 10, "slippage_bps": 2},
+    )
+    assert response.status_code == 200, response.text
+    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=600)
+    assert job["status"] == "ok", job
+
+    result = job["result"]
+    metrics = result["metrics"]
+    assert metrics["initial_equity"] == 1000
+    assert "buy_hold_return" in metrics
+    assert "max_drawdown" in metrics
+    assert result["verdict"]["text"]
+    assert isinstance(result["equity_curve"], list)
+
+    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    assert info["backtest"]["metrics"]["initial_equity"] == 1000
+
+    last = seeded_client.get("/api/backtest/last", headers=AUTH).json()
+    assert last["model"]["id"].startswith("model_")

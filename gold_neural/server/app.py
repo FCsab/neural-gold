@@ -67,6 +67,16 @@ class LeakageParams(DatasetParams):
     samples: int = Field(default=10, ge=1, le=50)
 
 
+class BacktestParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str | None = None
+    initial_equity: float = Field(default=10_000.0, gt=0, le=10_000_000)
+    fee_bps: float = Field(default=10.0, ge=0, le=100)
+    slippage_bps: float = Field(default=2.0, ge=0, le=100)
+    min_confidence: float = Field(default=0.0, ge=0, lt=1)
+
+
 class TrainParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -207,6 +217,7 @@ def create_app(
             "bars_dir": str(config.bars_dir.resolve()),
             "dataset": reports.read_report(config, "dataset"),
             "leakage": reports.read_report(config, "leakage"),
+            "backtest": reports.read_report(config, "backtest"),
             "verify": reports.read_report(config, "verify"),
             "exchange": reports.read_report(config, "exchange"),
         }
@@ -347,6 +358,27 @@ def create_app(
         if model is None:
             raise HTTPException(status_code=404, detail="unknown model")
         return {"model": model, "runs": registry.list_runs(model_id, limit=20)}
+
+    # -- backtest --------------------------------------------------------
+    @app.post("/api/backtest/run")
+    def post_backtest(params: BacktestParams, _: None = Depends(auth)) -> dict[str, Any]:
+        if not (config.data_root / "dataset.parquet").is_file():
+            raise HTTPException(
+                status_code=409,
+                detail="no dataset on disk; build one from the Labels tab first",
+            )
+        payload = params.model_dump()
+        job = manager.submit(
+            "backtest", payload, lambda ctx: tasks.run_backtest(config, payload, ctx)
+        )
+        return {"job_id": job.id}
+
+    @app.get("/api/backtest/last")
+    def backtest_last(_: None = Depends(auth)) -> dict[str, Any]:
+        report = reports.read_report(config, "backtest")
+        if report is None:
+            raise HTTPException(status_code=404, detail="no backtest has been run")
+        return report
 
     # -- jobs ------------------------------------------------------------
     @app.post("/api/jobs/{job_id}/stop")

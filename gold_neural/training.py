@@ -470,3 +470,62 @@ def train_process_entry(
             output_queue.join_thread()
         except Exception:  # pragma: no cover - best effort
             pass
+
+
+# --------------------------------------------------------------------------
+# inference (used by the backtest)
+# --------------------------------------------------------------------------
+def load_checkpoint(path: str | Path) -> dict[str, Any]:
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def predict_proba(
+    checkpoint: dict[str, Any],
+    frame: pd.DataFrame,
+    row_indices: np.ndarray,
+    *,
+    batch_size: int = 512,
+) -> np.ndarray:
+    """Probabilities for ``row_indices`` of ``frame``, in the given order.
+
+    Applies the scaler stored in the checkpoint, so the numbers match what the
+    model saw during training. Rows must have a full window behind them.
+    """
+    feature_names = list(checkpoint["feature_names"])
+    window = int(checkpoint["window"])
+    cfg = checkpoint["config"]
+    mean = np.asarray(checkpoint["scaler"]["mean"], dtype=np.float32)
+    std = np.asarray(checkpoint["scaler"]["std"], dtype=np.float32)
+
+    if len(row_indices) and int(row_indices.min()) < window - 1:
+        raise ValueError("row_indices must all have a full window behind them")
+
+    values = frame[feature_names].to_numpy(dtype=np.float32)
+    scaled = (values - mean) / std
+
+    model = WindowTransformer(
+        n_features=len(feature_names),
+        window=window,
+        d_model=int(cfg["d_model"]),
+        nhead=int(cfg["nhead"]),
+        layers=int(cfg["layers"]),
+        dim_feedforward=int(cfg["dim_feedforward"]),
+        dropout=float(cfg["dropout"]),
+    )
+    model.load_state_dict(checkpoint["model_state"])
+    model.eval()
+
+    view = np.lib.stride_tricks.sliding_window_view(scaled, window, axis=0)
+    batches: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(row_indices), batch_size):
+            chunk = row_indices[start : start + batch_size]
+            batch = np.ascontiguousarray(
+                view[chunk - (window - 1)].transpose(0, 2, 1)
+            )
+            logits = model(torch.from_numpy(batch))
+            batches.append(torch.softmax(logits, dim=1).numpy())
+
+    if not batches:
+        return np.zeros((0, len(CLASSES)), dtype=np.float32)
+    return np.concatenate(batches)

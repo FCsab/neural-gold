@@ -30,7 +30,7 @@ device. For anything beyond a trusted LAN, point `server.cert_path` and
 The work is a pipeline, so the UI is numbered like one:
 
 ```
-1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training
+1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training → 5 Backtest
 ```
 
 Each tab shows a status dot (grey = not done, green = done, red = failed), and
@@ -77,6 +77,11 @@ verdict, per-class table, confusion matrix and validation loss. After a
 restart the panel falls back to the newest model in the registry, so results
 do not disappear with the job list.
 
+**Backtest** — replays the unseen test slice as trades, charging fees and
+slippage on both sides, and draws the equity curve against simply holding
+PAXG. Leads with a verdict; flags the case where the profit target is smaller
+than the round-trip cost, because then nothing can be profitable.
+
 **Exchange rules** — cached `exchangeInfo` filters (tick size, step size,
 notional limits). Never hardcoded anywhere in the codebase.
 
@@ -101,6 +106,8 @@ does not, and contains no data.
 | POST | `/api/leakage/run` | run the leakage suite → job |
 | POST | `/api/train/start` | `{minutes?, epochs, window, ...}` → training job |
 | GET | `/api/train/status` | torch availability and dataset readiness |
+| POST | `/api/backtest/run` | `{model_id?, fee_bps, slippage_bps, ...}` → backtest job |
+| GET | `/api/backtest/last` | the persisted backtest report |
 | GET | `/api/models` | registry listing |
 | GET | `/api/models/{id}` | one model plus its runs |
 | GET | `/api/jobs` | job summaries (no logs) |
@@ -154,6 +161,7 @@ gold_neural/server/
   reports.py                 data/reports/*.json persistence
 gold_neural/model.py         window transformer + GPU probe
 gold_neural/training.py      training loop, time budget, cooperative stop
+gold_neural/backtest.py      trade simulation, fees, equity curve
 gold_neural/registry.py      SQLite models + training_runs
 web/
   index.html                 single page, six panels
@@ -165,7 +173,7 @@ scripts/smoke.py             post-deploy check of the running server
 
 ## Verified
 
-- `pytest`: 82 tests, no network required.
+- `pytest`: 97 tests, no network required.
 - `scripts/smoke.py` against a live server: 12/12 checks, including a
   leakage run through the job API.
 - Headless Chromium: page loads, chart renders 288 candles, all six tabs
@@ -175,3 +183,6 @@ scripts/smoke.py             post-deploy check of the running server
 - Guidance layer: checked against a fresh empty data root and against the
   populated one — the next-step banner, tab dots, intro card and empty states
   all follow the real state.
+- Backtest tab: verdict, stats, equity chart and 50 trade rows render from a
+  real run; the cost diagnostic fires when the target is under the round-trip
+  cost.

@@ -18,6 +18,9 @@ const state = {
   selectedJob: null,
   chart: null,
   series: null,
+  btChart: null,
+  btSeries: null,
+  btHoldSeries: null,
   rangeBars: 288,
   ws: null,
   wsRetry: null,
@@ -159,6 +162,10 @@ function switchPanel(name) {
     const job = currentTrainingJob();
     if (job) updateTrainLog(job.id);
   }
+  if (name === "backtest") {
+    ensureBtChart();
+    renderBacktestChart();
+  }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -218,6 +225,7 @@ async function refreshAll() {
     renderExchange();
     renderTraining();
     renderTrainingPanel();
+    renderBacktest();
     renderPipeline();
     renderIntro();
   } finally {
@@ -270,6 +278,7 @@ const JOB_LABELS = {
   verify: "Checking stored data",
   "exchange-info": "Fetching exchange rules",
   training: "Training",
+  backtest: "Backtesting",
 };
 
 const jobLabel = (kind) => JOB_LABELS[kind] || kind;
@@ -488,6 +497,7 @@ function computeStage() {
     leakageState: leakage ? (leakage.passed ? "pass" : "fail") : "none",
     models,
     hasModel: models.length > 0,
+    hasBacktest: Boolean(info.backtest),
   };
 }
 
@@ -528,10 +538,17 @@ function nextStepFor(stage) {
       action: "Take me there",
     };
   }
+  if (!stage.hasBacktest) {
+    return {
+      panel: "backtest",
+      text: "You have a model. Now see what its trades would actually have made after fees, next to simply holding PAXG.",
+      action: "Take me there",
+    };
+  }
   return {
-    panel: "training",
-    text: "Everything is set up. Train another model, or read the last run's honesty check.",
-    action: "Open training",
+    panel: "backtest",
+    text: "Everything is set up. Re-run the backtest with different costs, or train another model.",
+    action: "Open backtest",
   };
 }
 
@@ -544,6 +561,7 @@ function renderPipeline() {
     leakage:
       stage.leakageState === "pass" ? "done" : stage.leakageState === "fail" ? "error" : "",
     training: stage.hasModel ? "done" : "",
+    backtest: stage.hasBacktest ? "done" : "",
   };
   Object.entries(dots).forEach(([key, cls]) => {
     const dot = document.querySelector(`[data-dot="${key}"]`);
@@ -1131,6 +1149,181 @@ function trainParams() {
   };
 }
 
+/* -------------------------------------------------------------- backtest */
+function fmtMoney(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "–";
+  return Number(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function backtestParams() {
+  return {
+    initial_equity: Number($("bt-equity").value) || 10000,
+    fee_bps: numberOr($("bt-fees").value) ?? 10,
+    slippage_bps: numberOr($("bt-slip").value) ?? 2,
+    min_confidence: numberOr($("bt-conf").value) ?? 0,
+  };
+}
+
+function ensureBtChart() {
+  if (state.btChart || typeof LightweightCharts === "undefined") return;
+  const container = $("bt-chart");
+  state.btChart = LightweightCharts.createChart(container, {
+    width: container.clientWidth,
+    height: container.clientHeight || 320,
+    layout: { background: { color: "#11161f" }, textColor: "#7d8ca1", fontSize: 11 },
+    grid: { vertLines: { color: "#161d29" }, horzLines: { color: "#161d29" } },
+    rightPriceScale: { borderColor: "#1d2634" },
+    timeScale: { borderColor: "#1d2634", timeVisible: true },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+  state.btSeries = state.btChart.addLineSeries({
+    color: "#d9b25f",
+    lineWidth: 2,
+    priceFormat: { type: "price", precision: 0, minMove: 1 },
+  });
+  state.btHoldSeries = state.btChart.addLineSeries({
+    color: "#5a6c85",
+    lineWidth: 1,
+    lineStyle: 2,
+    priceFormat: { type: "price", precision: 0, minMove: 1 },
+  });
+  new ResizeObserver(() => {
+    if (!state.btChart) return;
+    state.btChart.applyOptions({
+      width: container.clientWidth,
+      height: container.clientHeight,
+    });
+  }).observe(container);
+}
+
+function renderBacktestChart() {
+  const report = state.info && state.info.backtest;
+  if (!report || !state.btSeries) return;
+  const metrics = report.metrics || {};
+  const curve = (report.equity_curve || []).map((point) => ({
+    time: Math.floor(point.time),
+    value: point.equity,
+  }));
+
+  const startSeconds =
+    report.slice && report.slice.first_ms
+      ? Math.floor(report.slice.first_ms / 1000)
+      : curve.length
+      ? curve[0].time
+      : null;
+  if (startSeconds === null) return;
+
+  const seen = new Set();
+  const points = [];
+  for (const point of [{ time: startSeconds, value: metrics.initial_equity }, ...curve]) {
+    if (seen.has(point.time)) continue;
+    seen.add(point.time);
+    points.push(point);
+  }
+  points.sort((a, b) => a.time - b.time);
+
+  state.btSeries.setData(points);
+  const last = points[points.length - 1];
+  state.btHoldSeries.setData([
+    { time: startSeconds, value: metrics.initial_equity },
+    { time: last.time, value: metrics.initial_equity * (1 + (metrics.buy_hold_return || 0)) },
+  ]);
+  state.btChart.timeScale().fitContent();
+}
+
+function renderBacktest() {
+  const report = state.info && state.info.backtest;
+  const badge = $("bt-badge");
+
+  if (!report) {
+    badge.textContent = "not run";
+    badge.className = "badge";
+    $("bt-verdict").innerHTML = "";
+    $("bt-stats").innerHTML =
+      '<dt>—</dt><dd>No backtest yet. Press “Run the backtest”.</dd>';
+    $("bt-trades").innerHTML = "";
+    $("bt-trade-count").textContent = "";
+    $("bt-meta").textContent = "";
+    return;
+  }
+
+  const metrics = report.metrics || {};
+  const total = Number(metrics.total_return || 0);
+  badge.textContent = `${total >= 0 ? "+" : ""}${(total * 100).toFixed(2)}%`;
+  badge.className = "badge " + (total > 0 ? "ok" : "bad");
+
+  const verdict = report.verdict || {};
+  $("bt-verdict").innerHTML = verdict.text
+    ? `<div class="verdict ${verdict.tone || ""}">${escapeHtml(verdict.text)}</div>`
+    : "";
+
+  const rows = [
+    ["Final money", `${fmtMoney(metrics.final_equity)} USDT`],
+    [
+      "Profit / loss",
+      `${metrics.pnl >= 0 ? "+" : ""}${fmtMoney(metrics.pnl)} USDT (${(total * 100).toFixed(2)}%)`,
+    ],
+    ["Just holding PAXG", fmtPct(metrics.buy_hold_return, 2)],
+    ["Versus holding", fmtPct(metrics.excess_return, 2)],
+    ["Trades", fmtInt(metrics.trades)],
+    ["Win rate", metrics.win_rate == null ? "–" : fmtPct(metrics.win_rate, 1)],
+    ["Max drawdown", fmtPct(metrics.max_drawdown, 2)],
+    [
+      "Winning trades captured",
+      metrics.avg_gross_win == null
+        ? "–"
+        : `${(metrics.avg_gross_win * 10000).toFixed(1)} bps`,
+    ],
+    [
+      "Round-trip cost",
+      metrics.round_trip_cost == null
+        ? "–"
+        : `${(metrics.round_trip_cost * 10000).toFixed(0)} bps`,
+    ],
+    ["Sharpe (daily)", metrics.sharpe == null ? "–" : fmtNum(metrics.sharpe, 2)],
+    ["Test window", `${fmtDate(metrics.start_ms)} → ${fmtDate(metrics.end_ms)}`],
+    [
+      "Costs charged",
+      `${metrics.fees_bps} bps fee + ${metrics.slippage_bps} bps slippage, each side`,
+    ],
+  ];
+  $("bt-stats").innerHTML = rows
+    .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
+    .join("");
+
+  $("bt-meta").textContent = report.model
+    ? `${report.model.name} · ${fmtInt(report.slice && report.slice.rows)} scored rows`
+    : "";
+
+  const trades = report.trades || [];
+  $("bt-trade-count").textContent = `(${fmtInt(report.trade_count || trades.length)})`;
+  const table = $("bt-trades");
+  if (!trades.length) {
+    table.innerHTML = '<tbody><tr><td class="muted">no trades were taken</td></tr></tbody>';
+  } else {
+    const body = trades
+      .slice()
+      .reverse()
+      .map(
+        (trade) =>
+          `<tr><td>${fmtDate(trade.entry_ms)}</td><td>${fmtDate(trade.exit_ms)}</td>` +
+          `<td class="num">${fmtNum(trade.entry, 2)}</td><td class="num">${fmtNum(trade.exit, 2)}</td>` +
+          `<td class="num">${fmtNum(trade.net_pct, 3)}%</td><td class="num">${fmtMoney(trade.pnl)}</td>` +
+          `<td class="num">${fmtInt(trade.bars)}</td></tr>`
+      )
+      .join("");
+    table.innerHTML =
+      '<thead><tr><th>entry</th><th>exit</th><th class="num">buy at</th><th class="num">sell at</th>' +
+      '<th class="num">net</th><th class="num">P&amp;L</th><th class="num">bars</th></tr></thead>' +
+      `<tbody>${body}</tbody>`;
+  }
+
+  renderBacktestChart();
+}
+
 /* ----------------------------------------------------------------- events */
 function datasetParams() {
   const params = {
@@ -1236,6 +1429,10 @@ function bindEvents() {
       { samples: numberOr($("leakage-samples").value) || 10, ...datasetParams() },
       "leakage"
     );
+  });
+
+  $("run-backtest").addEventListener("click", () => {
+    startJob("/api/backtest/run", backtestParams(), "backtest");
   });
 
   $("start-training").addEventListener("click", async () => {

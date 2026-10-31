@@ -485,3 +485,115 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         "run_id": run_id,
         **result_payload,
     }
+
+
+def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
+    """Score the test slice with a trained checkpoint and simulate the trades."""
+    import numpy as np
+
+    from .. import training as training_module
+    from ..backtest import BacktestConfig, run_backtest as simulate, verdict
+    from ..registry import registry_from_config
+
+    registry = registry_from_config(config)
+    model_id = params.get("model_id")
+    if model_id:
+        model = registry.get_model(model_id)
+    else:
+        model = next(
+            (m for m in registry.list_models(limit=50) if m.get("checkpoint_path")),
+            None,
+        )
+    if model is None:
+        raise RuntimeError("no trained model with a checkpoint; train one first")
+
+    checkpoint_path = Path(model["checkpoint_path"])
+    if not checkpoint_path.is_file():
+        raise RuntimeError(f"checkpoint for {model['name']} is missing on disk")
+
+    dataset_path = config.data_root / "dataset.parquet"
+    if not dataset_path.is_file():
+        raise RuntimeError("no dataset on disk; build one from the Labels tab")
+
+    ctx.message("loading checkpoint and dataset")
+    checkpoint = training_module.load_checkpoint(checkpoint_path)
+    frame = pd.read_parquet(dataset_path)
+    train_config = checkpoint.get("config", {})
+    window = int(checkpoint.get("window", 64))
+    test_start = int(
+        len(frame)
+        * (float(train_config.get("train_frac", 0.70)) + float(train_config.get("val_frac", 0.15)))
+    )
+    rows = np.arange(max(test_start, window - 1), len(frame))
+    if len(rows) < 50:
+        raise RuntimeError("the test slice is too small to backtest")
+
+    ctx.progress(0.25, f"scoring {len(rows):,} rows with {model['name']}")
+    probabilities = training_module.predict_proba(checkpoint, frame, rows)
+    test = frame.iloc[rows].reset_index(drop=True)
+
+    # The dataset stores the signal bar's close, not the next bar's open. Pull
+    # the open prices from the bar store so entry happens at a tradeable price.
+    store = store_from_config(config)
+    bars = store.load_bars()
+    open_by_time = dict(
+        zip(
+            bars["open_time"].astype("int64").tolist(),
+            bars["open"].astype("float64").tolist(),
+        )
+    )
+    opens = np.array(
+        [open_by_time.get(int(t), float("nan")) for t in test["open_time"]], dtype=np.float64
+    )
+    next_open = np.full(len(opens), np.nan, dtype=np.float64)
+    if len(opens) > 1:
+        next_open[:-1] = opens[1:]
+    closes = test["close"].to_numpy(dtype=np.float64)
+    entry = np.where(np.isfinite(next_open), next_open, closes)
+
+    prepared = pd.DataFrame(
+        {
+            "open_time": test["open_time"].to_numpy(dtype=np.int64),
+            "entry_price": entry,
+            "exit_time": test["exit_time"].to_numpy(dtype=np.int64),
+            "exit_price": test["exit_price"].to_numpy(dtype=np.float64),
+            "holding_bars": test["holding_bars"].to_numpy(dtype=np.int64),
+            "label": test["label"].to_numpy(dtype=np.int64),
+        }
+    )
+
+    backtest_config = BacktestConfig(
+        initial_equity=float(params.get("initial_equity", 10_000.0)),
+        fee_bps=float(params.get("fee_bps", 10.0)),
+        slippage_bps=float(params.get("slippage_bps", 2.0)),
+        min_confidence=float(params.get("min_confidence", 0.0)),
+    )
+
+    ctx.progress(0.7, "simulating trades")
+    result = simulate(prepared, probabilities, backtest_config)
+    payload = result.to_dict()
+    payload["verdict"] = verdict(result.metrics)
+    payload["model"] = {
+        "id": model["id"],
+        "name": model["name"],
+        "status": model["status"],
+    }
+    payload["params"] = {
+        "initial_equity": backtest_config.initial_equity,
+        "fee_bps": backtest_config.fee_bps,
+        "slippage_bps": backtest_config.slippage_bps,
+        "min_confidence": backtest_config.min_confidence,
+    }
+    payload["slice"] = {
+        "rows": int(len(rows)),
+        "first_ms": int(test["open_time"].iloc[0]),
+        "last_ms": int(test["open_time"].iloc[-1]),
+    }
+    reports.write_report(config, "backtest", payload)
+
+    metrics = result.metrics
+    ctx.log(
+        f"{metrics['trades']} trades · {metrics['total_return'] * 100:+.2f}% vs "
+        f"buy-and-hold {metrics['buy_hold_return'] * 100:+.2f}%"
+    )
+    return payload

@@ -36,9 +36,9 @@ remembers it.
   transport   HTTPS (self-signed)
 ```
 
-The page is a numbered four-step guide — market data, labels, look-ahead
-check, training — with a status dot per step and a “next step” banner that
-always names the one thing left to do. Every control has a plain-English
+The page is a numbered five-step guide — market data, labels, look-ahead
+check, training, backtest — with a status dot per step and a “next step”
+banner that always names the one thing left to do. Every control has a plain-English
 help line, and training results open with a verdict in words before the
 numbers.
 
@@ -46,6 +46,8 @@ numbers.
 - **2 Labels & dataset** — barrier settings, label preview, build Parquet.
 - **3 Look-ahead check** — the mandatory leakage suite, with metrics.
 - **4 Training** — run for N minutes or until you press Stop.
+- **5 Backtest** — replay the unseen test slice as trades with fees and
+  slippage, equity curve against buy-and-hold.
 - **Exchange rules** — fetch and cache `exchangeInfo` filters.
 - **Activity** — every job, live progress, full log.
 
@@ -95,6 +97,7 @@ gold_neural/
   leakage.py           the mandatory leakage suite
   model.py             window transformer + mandatory GPU probe
   training.py          training loop: time budget, cooperative stop, metrics
+  backtest.py          trade simulation: fees, slippage, equity, buy-and-hold
   registry.py          SQLite model + training-run registry
   cli.py               headless backfill / dataset / labels / leakage
   server/              FastAPI app, job queue, auth, TLS, reports
@@ -166,6 +169,10 @@ Against live Binance data on 2026-10-31:
   stopped exactly at the 2-minute budget, checkpoint written, balanced
   accuracy 0.403 against a 0.485 majority baseline — recorded as `draft`,
   because it did not earn `candidate`.
+- Backtest of that model over 109 days of unseen data: 3,520 trades,
+  10,000 → 2.15 USDT. Not a model failure first — the profit target is 16 bps
+  while a round trip costs 24 bps, so no model can win at those label
+  settings. The UI says so instead of reporting a bare percentage.
 
 Numbers from the data run are in `docs/data-report.md`; the training run and
 its honest result are in `docs/training.md`.
