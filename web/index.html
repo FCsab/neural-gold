@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gold-neural</title>
+<link rel="stylesheet" href="/assets/styles.css" />
+<script src="/assets/vendor/lightweight-charts.standalone.production.js" defer></script>
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+
+<div id="login" class="login hidden">
+  <form class="login-card" id="login-form">
+    <h1>gold-neural</h1>
+    <p class="muted">
+      Paste the API token printed by <code>python run.py</code>, or the value of
+      <code>GOLDNEURAL_API_TOKEN</code>.
+    </p>
+    <input id="login-token" type="password" placeholder="bearer token"
+           autocomplete="off" spellcheck="false" required />
+    <button type="submit" class="primary">Unlock</button>
+    <p class="error" id="login-error"></p>
+  </form>
+</div>
+
+<header class="topbar">
+  <div class="brand"><span class="pulse"></span> gold-neural <span class="muted small" id="version"></span></div>
+  <div class="chips" id="status-chips"></div>
+  <button class="ghost" id="logout" title="forget the token in this browser">lock</button>
+</header>
+
+<div class="jobstrip idle" id="jobstrip">
+  <span class="jobstrip-kind">idle</span>
+  <span class="jobstrip-msg">no job running</span>
+  <div class="bar"><div class="bar-fill" id="jobstrip-bar"></div></div>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button data-panel="data" class="active">Data</button>
+  <button data-panel="dataset">Dataset</button>
+  <button data-panel="leakage">Leakage</button>
+  <button data-panel="exchange">Exchange</button>
+  <button data-panel="console">Console<span class="badge hidden" id="job-badge">0</span></button>
+  <button data-panel="training">Training</button>
+</nav>
+
+<main>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel active" id="panel-data">
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head">
+        <h2>Price</h2>
+        <div class="controls">
+          <div class="seg" id="range-seg">
+            <button data-bars="288" class="active">24h</button>
+            <button data-bars="2016">7d</button>
+            <button data-bars="8640">30d</button>
+          </div>
+          <button class="ghost" id="refresh-bars">refresh</button>
+        </div>
+      </div>
+      <div id="chart" class="chart"></div>
+      <p class="muted small" id="chart-note">loading…</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head">
+        <h2>Coverage</h2>
+        <button class="ghost" id="verify">verify stored bars</button>
+      </div>
+      <dl class="stats" id="coverage-stats"></dl>
+      <p class="muted small" id="verify-note">not verified yet in this session</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Backfill</h2></div>
+      <form id="backfill-form" class="form">
+        <label>Years of history
+          <input id="backfill-years" type="number" step="0.5" min="0.1" max="10" value="2" />
+        </label>
+        <button type="submit" class="primary">Download bars</button>
+      </form>
+      <p class="muted small">
+        Resumes from the last stored bar, so running it again is cheap and
+        idempotent. Requires the Binance spot API to be reachable.
+      </p>
+    </div>
+  </div>
+
+  <details class="card">
+    <summary>Partitions <span class="muted small" id="partition-count"></span></summary>
+    <div class="table-wrap"><table class="table" id="partitions"></table></div>
+  </details>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-dataset">
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head"><h2>Label configuration</h2></div>
+      <form id="dataset-form" class="grid-form">
+        <label>k_up <input id="k-up" type="number" step="0.1" min="0.1" max="20" value="2.0" /></label>
+        <label>k_down <input id="k-down" type="number" step="0.1" min="0.1" max="20" value="1.5" /></label>
+        <label>max holding bars <input id="horizon" type="number" step="1" min="1" max="288" value="12" /></label>
+        <label>ATR period <input id="atr-period" type="number" step="1" min="2" max="200" value="14" /></label>
+        <label>feature lag <input id="feature-lag" type="number" step="1" min="0" max="10" value="1" /></label>
+        <label>ambiguity
+          <select id="ambiguity">
+            <option value="stop_priority">stop priority (pessimistic)</option>
+            <option value="up_priority">up priority (optimistic)</option>
+          </select>
+        </label>
+      </form>
+      <div class="controls">
+        <button id="preview-labels">Preview labels</button>
+        <button class="primary" id="build-dataset">Build dataset</button>
+      </div>
+      <p class="muted small">
+        Barriers scale by ATR. A build rewrites <code>data/dataset.parquet</code>
+        and records the exact parameters used.
+      </p>
+    </div>
+
+    <div class="card grow">
+      <div class="card-head"><h2>Last build</h2></div>
+      <dl class="stats" id="dataset-stats"><dt>—</dt><dd class="muted">nothing built yet</dd></dl>
+      <div id="class-table"></div>
+      <div id="preview-result"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-leakage">
+  <div class="row">
+    <div class="card">
+      <div class="card-head"><h2>Run</h2></div>
+      <form id="leakage-form" class="form">
+        <label>Samples per check <input id="leakage-samples" type="number" min="1" max="50" value="10" /></label>
+        <button type="submit" class="primary">Run leakage suite</button>
+      </form>
+      <p class="muted small">
+        Uses the label parameters from the Dataset tab. The suite exits non-zero
+        from the CLI too, so the same gate applies to training runs later.
+      </p>
+    </div>
+    <div class="card grow">
+      <div class="card-head"><h2>Result</h2><span id="leakage-badge" class="badge">—</span></div>
+      <div id="leakage-checks" class="checks"><p class="muted small">not run yet</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-exchange">
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head">
+        <h2>Trading filters</h2>
+        <button class="ghost" id="refresh-exchange">fetch from Binance</button>
+      </div>
+      <p class="muted small">
+        Never hardcode precision. The execution layer must round to these values
+        and re-fetch hourly; a mid-run change invalidates open orders.
+      </p>
+      <div class="table-wrap"><table class="table" id="exchange-table"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-console">
+  <div class="row">
+    <div class="card narrow">
+      <div class="card-head"><h2>Jobs</h2></div>
+      <div id="job-list" class="job-list"><p class="muted small">none yet</p></div>
+    </div>
+    <div class="card grow">
+      <div class="card-head">
+        <h2 id="log-title">Log</h2>
+        <span class="muted small" id="log-meta"></span>
+      </div>
+      <pre id="log" class="log">select a job</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="panel" id="panel-training">
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head"><h2>Training workbench</h2><span class="badge amber">not built</span></div>
+      <p id="training-reason" class="muted">checking…</p>
+      <p class="muted small">
+        Build-order step 2 adds the model registry (SQLite), the compact
+        transformer, walk-forward validation with per-class metrics and a
+        confusion matrix, and the compare view. Until then there is intentionally
+        nothing here that looks like a train button.
+      </p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="toasts"></div>
+</body>
+</html>

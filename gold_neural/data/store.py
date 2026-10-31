@@ -238,7 +238,15 @@ class BarStore:
 
     def load_bars(self, start_ms: int | None = None, end_ms: int | None = None) -> pd.DataFrame:
         """Load bars in ``[start_ms, end_ms]`` (inclusive), sorted by open_time."""
-        paths = [p["path"] for p in self.partitions()]
+        entries = self.partitions()
+        # Use the index instead of reading every month: the chart asks for the
+        # last few hundred bars, not two years of them.
+        if start_ms is not None:
+            entries = [e for e in entries if int(e["end_ms"]) >= int(start_ms)]
+        if end_ms is not None:
+            entries = [e for e in entries if int(e["start_ms"]) <= int(end_ms)]
+
+        paths = [e["path"] for e in entries]
         if not paths:
             return pd.DataFrame(columns=BAR_COLUMNS)
 

@@ -38,3 +38,19 @@ labels:
   # When both barriers are touched inside the same bar we cannot know the
   # intrabar order. "stop_priority" books it as a loss (conservative).
   ambiguity: "stop_priority"
+
+server:
+  # Bound to all interfaces; intended for a trusted LAN only.
+  host: "0.0.0.0"
+  port: 8443
+  # Self-signed certificate is generated on first boot if absent.
+  tls_enabled: true
+  cert_path: "certs/server.crt"
+  key_path: "certs/server.key"
+  # Bearer token: read from this env var, else from token_file (created
+  # with mode 0600 on first boot). Never stored in config or SQLite.
+  token_env: "GOLDNEURAL_API_TOKEN"
+  token_file: ".token"
+  # Empty = accept any source. Otherwise list IPs or CIDR blocks, e.g.
+  # ["192.168.1.0/24", "127.0.0.1"].
+  allowed_ips: []

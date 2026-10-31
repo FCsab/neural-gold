@@ -146,11 +146,42 @@ class LabelConfig:
 
 
 @dataclass(frozen=True)
+class ServerConfig:
+    """Web UI / API server settings.
+
+    The token is never stored in config: it comes from ``token_env`` or from
+    ``token_file`` (created with 0600 on first boot). ``allowed_ips`` is a
+    list of addresses or CIDR blocks; empty means "any source".
+    """
+
+    host: str = "0.0.0.0"
+    port: int = 8443
+    tls_enabled: bool = True
+    cert_path: str = "certs/server.crt"
+    key_path: str = "certs/server.key"
+    token_env: str = "GOLDNEURAL_API_TOKEN"
+    token_file: str = ".token"
+    allowed_ips: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.port <= 65535:
+            raise ConfigError("server.port must be within 1..65535")
+        for entry in self.allowed_ips:
+            import ipaddress
+
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                raise ConfigError(f"server.allowed_ips entry {entry!r} is not an IP or CIDR") from None
+
+
+@dataclass(frozen=True)
 class AppConfig:
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     data: DataConfig = field(default_factory=DataConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     labels: LabelConfig = field(default_factory=LabelConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     @property
     def data_root(self) -> Path:
@@ -159,6 +190,10 @@ class AppConfig:
     @property
     def bars_dir(self) -> Path:
         return self.data_root / "klines" / self.exchange.symbol / self.exchange.interval
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.data_root / "reports"
 
     @property
     def index_path(self) -> Path:
@@ -190,7 +225,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             raise ConfigError(f"{p} must contain a YAML mapping at the top level")
         raw = loaded
 
-    unknown_sections = set(raw) - {"exchange", "data", "features", "labels"}
+    unknown_sections = set(raw) - {"exchange", "data", "features", "labels", "server"}
     if unknown_sections:
         raise ConfigError(f"unknown config sections: {sorted(unknown_sections)}")
 
@@ -199,4 +234,5 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         data=_build(DataConfig, raw.get("data") or {}, "data"),
         features=_build(FeatureConfig, raw.get("features") or {}, "features"),
         labels=_build(LabelConfig, raw.get("labels") or {}, "labels"),
+        server=_build(ServerConfig, raw.get("server") or {}, "server"),
     )
