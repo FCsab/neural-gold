@@ -124,25 +124,31 @@ recall   stop 41.2%  timeout 14.6%  target 51.5%
 status               draft
 ```
 
-That run was then repeated with the two changes the curve seemed to call for —
-a smaller learning rate (1e-4) and twice the context (window 128), patience 5:
+Then the same model was retrained after the history was extended to 6.1 years,
+this time with a wider window (128) and a smaller learning rate (1e-4):
 
 ```
+bars                 641,385   (2020-09-24 -> 2026-10-31)
+dataset rows         641,323
 epochs               11 in 757 s, best epoch 6
 balanced accuracy    0.3528
 constant-guess       0.3333   (+1.9 points)
 plain accuracy       0.3902
-validation floor     1.0616   (previous run: 1.0619)
 status               draft
 ```
 
-**Neither change helped.** The validation floor moved by 0.0003 while the
-wall clock more than doubled, and balanced accuracy landed half a point lower
-— noise in either direction. When two very different step sizes and window
-lengths converge to the same loss, those are not the binding constraint; the
-feature set and the amount of history are. The defaults stay at window 64 /
-lr 3e-4, which reaches the same place in half the time, with patience 10 to
-give a slower start room to recover.
+That run differs from the previous one in **three** ways at once — three times
+the history, twice the window, a smaller step — so it cannot attribute its
+result to any single change. What it does establish is the thing that matters:
+**tripling the history did not help.** Balanced accuracy on a test slice three
+times larger came out at 0.3528 against 0.3575 on the short one. Whatever
+limits this model, it survives more data, more context and a different
+learning rate.
+
+Because the more expensive configuration showed no measured benefit, the
+defaults keep the cheaper pair (window 64, lr 3e-4) with patience 10, which
+gives a slow start room to recover without paying for 128-bar attention on
+every sample. Isolating one variable at a time is the way to move them again.
 
 What the model does find: 51.5% of real targets against a 32% base rate, while
 losing the timeout class almost entirely (14.6% recall). Training loss falls
