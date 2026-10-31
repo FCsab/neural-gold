@@ -4,11 +4,11 @@ PAXG/USDT neural trading system. Binance spot, long-only, triple-barrier
 labels, 5-minute bars by default.
 
 `python run.py` starts one HTTPS server that serves the UI and the API.
-Backfill, label previews, dataset builds, the leakage suite, and the
-exchange filters are all operated from the browser.
+Backfill, label previews, dataset builds, the leakage suite, the exchange
+filters, and training are all operated from the browser.
 
-**Current state: build-order step 1 (data layer) is complete and verified,
-with the web workbench on top.** No training, no execution engine, no
+**Current state: step 1 (data layer) is complete, and step 2 is partly in
+(one model trains end to end, with a registry).** No execution engine, no
 orders. Nothing here can move money.
 
 ## Run it
@@ -16,8 +16,13 @@ orders. Nothing here can move money.
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/python run.py
 ```
+
+The torch line is only needed for training. On an AMD GPU use
+`--index-url https://download.pytorch.org/whl/rocm6.4` instead; the device is
+probed per run either way.
 
 The first boot generates a self-signed certificate and an API token, prints
 both, and serves `https://<lan-ip>:8443/`. Paste the token once; the browser
@@ -38,7 +43,8 @@ From there:
 - **Leakage** — run the mandatory suite, see every check and its metrics.
 - **Exchange** — fetch and cache `exchangeInfo` filters.
 - **Console** — every job, live progress, full log.
-- **Training** — deliberately empty until step 2 lands.
+- **Training** — start a run for N minutes or until you press Stop, watch
+  the loss curve, and read per-class metrics and the confusion matrix.
 
 See `docs/web-ui.md` for the API surface, security posture, and the reasoning
 behind the no-build-step frontend.
@@ -84,6 +90,9 @@ gold_neural/
   labels.py            vectorised triple barrier
   dataset.py           time-aligned feature+label frame, walk-forward split
   leakage.py           the mandatory leakage suite
+  model.py             window transformer + mandatory GPU probe
+  training.py          training loop: time budget, cooperative stop, metrics
+  registry.py          SQLite model + training-run registry
   cli.py               headless backfill / dataset / labels / leakage
   server/              FastAPI app, job queue, auth, TLS, reports
 web/                   single-page UI (plain ES2020, vendored chart lib)
@@ -144,16 +153,22 @@ Against live Binance data on 2026-10-31:
 - 210,384 five-minute bars over 730 days, zero gaps, OHLC verification clean.
 - 210,322 feature rows × 21 features; walk-forward split 147k / 31.5k / 31.5k.
 - Leakage suite: PASS on the real series.
-- `pytest`: 59 tests, no network required.
+- `pytest`: 82 tests, no network required.
 - `scripts/smoke.py` against the running server: 12/12 checks.
-- Headless Chromium: chart renders, all six tabs work, a label preview runs
-  from the browser and renders its per-class table, zero console errors.
+- Headless Chromium: chart renders, all six tabs work, a label preview and a
+  training run both start and finish from the browser, zero console errors.
+- Training on the RX 7600 XT (ROCm): 10 epochs over 210k rows in 121 s,
+  stopped exactly at the 2-minute budget, checkpoint written, balanced
+  accuracy 0.403 against a 0.485 majority baseline — recorded as `draft`,
+  because it did not earn `candidate`.
 
-Numbers from the data run are in `docs/data-report.md`.
+Numbers from the data run are in `docs/data-report.md`; the training run and
+its honest result are in `docs/training.md`.
 
 ## Not built yet
 
-Build-order steps 2-8: training workbench, model registry, GPU probe,
-paper execution, fill-simulation gate, live orders, drift loop, dashboard
-polish. The plan's rule stands: no live order until paper P&L and the
-walk-forward simulation agree within ~20% on the same date range.
+The rest of step 2 (compare view, shadow/live promotion, predictions log),
+then steps 4-8: paper execution, fill-simulation gate, live orders, drift
+loop, dashboard polish. The plan's rule stands: no live order until paper
+P&L and the walk-forward simulation agree within ~20% on the same date
+range.

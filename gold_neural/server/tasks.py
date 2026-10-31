@@ -272,3 +272,216 @@ def refresh_exchange_info(config: AppConfig, ctx) -> dict[str, Any]:
         )
     )
     return info
+
+
+def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
+    """Train a model in a child process, honouring a time budget and Stop."""
+    import multiprocessing
+    import queue as queue_module
+
+    import pyarrow.parquet as pq
+
+    from .. import training as training_module
+    from ..dataset import META_COLUMNS
+    from ..registry import new_id, registry_from_config
+
+    dataset_path = config.data_root / "dataset.parquet"
+    if not dataset_path.is_file():
+        raise RuntimeError("no dataset on disk; build one from the Dataset tab first")
+
+    report = reports.read_report(config, "dataset") or {}
+    report_params = report.get("params") or {}
+    feature_names = list(report.get("feature_names") or [])
+    if not feature_names:
+        schema = pq.read_schema(dataset_path)
+        feature_names = [name for name in schema.names if name not in META_COLUMNS]
+    if not feature_names:
+        raise RuntimeError("dataset has no feature columns")
+
+    window = int(params.get("window", 64))
+    train_config = training_module.TrainConfig(
+        window=window,
+        epochs=int(params.get("epochs", 50)),
+        batch_size=int(params.get("batch_size", 256)),
+        lr=float(params.get("lr", 3e-4)),
+        patience=int(params.get("patience", 5)),
+        seed=int(params.get("seed", 7)),
+        max_minutes=float(params["minutes"]) if params.get("minutes") else None,
+        device=str(params.get("device", "auto")),
+    )
+
+    registry = registry_from_config(config)
+    model_id = new_id("model")
+    model_name = (
+        f"{config.exchange.symbol}-{config.exchange.interval}-w{window}-"
+        f"{datetime.now(tz=timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    )
+    label_config = {
+        key: report_params.get(key)
+        for key in ("k_up", "k_down", "max_holding_bars", "atr_period", "ambiguity")
+        if report_params.get(key) is not None
+    }
+    registry.create_model(
+        model_id=model_id,
+        name=model_name,
+        interval=config.exchange.interval,
+        architecture="transformer_v1",
+        window=window,
+        label_config=label_config,
+        feature_config={"feature_lag": report_params.get("feature_lag")},
+        status="training",
+    )
+
+    checkpoint_dir = config.data_root / "checkpoints" / model_id
+    started_at = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    budget = train_config.max_minutes
+    budget_text = f"{budget:g} min" if budget else "until stopped"
+    ctx.log(
+        f"model {model_id} · window {window} · {len(feature_names)} features · "
+        f"budget {budget_text}"
+    )
+
+    context = multiprocessing.get_context("spawn")
+    stop_event = context.Event()
+    progress_queue = context.Queue()
+    ctx.on_stop(stop_event.set)
+
+    process = context.Process(
+        target=training_module.train_process_entry,
+        args=(
+            {
+                "window": train_config.window,
+                "epochs": train_config.epochs,
+                "batch_size": train_config.batch_size,
+                "lr": train_config.lr,
+                "weight_decay": train_config.weight_decay,
+                "dropout": train_config.dropout,
+                "d_model": train_config.d_model,
+                "nhead": train_config.nhead,
+                "layers": train_config.layers,
+                "dim_feedforward": train_config.dim_feedforward,
+                "patience": train_config.patience,
+                "max_minutes": train_config.max_minutes,
+                "seed": train_config.seed,
+                "num_threads": train_config.num_threads,
+                "device": train_config.device,
+                "train_frac": train_config.train_frac,
+                "val_frac": train_config.val_frac,
+            },
+            str(dataset_path),
+            feature_names,
+            str(checkpoint_dir),
+            progress_queue,
+            stop_event,
+        ),
+        name=f"training-{model_id}",
+        daemon=True,
+    )
+    process.start()
+
+    result_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    stop_requested_at: float | None = None
+
+    while True:
+        try:
+            message = progress_queue.get(timeout=0.4)
+        except queue_module.Empty:
+            if not process.is_alive():
+                break
+            if ctx.should_stop() and not stop_event.is_set():
+                stop_event.set()
+            if stop_event.is_set() and stop_requested_at is None:
+                stop_requested_at = time.monotonic()
+            if stop_requested_at and time.monotonic() - stop_requested_at > 120:
+                ctx.log("training ignored the stop request for 120s; terminating")
+                process.terminate()
+            continue
+
+        kind = message.get("type")
+        if kind == "progress":
+            total = max(1, int(message.get("epochs_total", 1)))
+            ctx.update(
+                message=message.get("message") or "training",
+                progress=min(0.99, int(message.get("epoch", 0)) / total),
+            )
+        elif kind == "result":
+            result_payload = message.get("result")
+        elif kind == "error":
+            error_payload = message
+
+    process.join(timeout=30)
+    if process.is_alive():  # pragma: no cover - only on a wedged child
+        process.terminate()
+        process.join(timeout=10)
+
+    if error_payload is not None:
+        registry.update_model(model_id, status="failed")
+        registry.record_run(
+            model_id=model_id,
+            started_at=started_at,
+            status="failed",
+            config={"window": window, "epochs": train_config.epochs},
+            stop_reason="error",
+        )
+        trace = (error_payload.get("trace") or "").strip().splitlines()
+        raise RuntimeError(
+            error_payload.get("error", "training failed")
+            + ("\n" + "\n".join(trace[-6:]) if trace else "")
+        )
+
+    if result_payload is None:
+        registry.update_model(model_id, status="failed")
+        raise RuntimeError("training process exited without returning a result")
+
+    metrics = result_payload.get("metrics") or {}
+    trained = result_payload.get("checkpoint_path") is not None
+    status = (
+        "candidate"
+        if result_payload.get("status") == "ok" and metrics.get("beats_baseline") and trained
+        else "draft"
+    )
+    if trained:
+        registry.update_model(
+            model_id,
+            status=status,
+            checkpoint_path=result_payload["checkpoint_path"],
+            checkpoint_version=int(result_payload.get("checkpoint_version") or 1),
+            metrics=metrics,
+        )
+    else:
+        registry.update_model(model_id, status="draft")
+
+    run_id = registry.record_run(
+        model_id=model_id,
+        started_at=started_at,
+        status=result_payload.get("status", "unknown"),
+        config={"window": window, "epochs": train_config.epochs,
+                "batch_size": train_config.batch_size, "lr": train_config.lr,
+                "max_minutes": train_config.max_minutes, "device": result_payload.get("device")},
+        final_metrics=metrics,
+        per_class_metrics=metrics.get("per_class"),
+        confusion_matrix=metrics.get("confusion_matrix"),
+        epochs_done=result_payload.get("epochs_done"),
+        stop_reason=result_payload.get("stop_reason"),
+        duration_s=result_payload.get("duration_s"),
+        device=result_payload.get("device"),
+    )
+
+    ctx.log(
+        f"{result_payload.get('stop_reason')} after "
+        f"{result_payload.get('epochs_done')} epochs in "
+        f"{result_payload.get('duration_s')}s on {result_payload.get('device')}"
+    )
+    ctx.log(
+        f"balanced_accuracy {metrics.get('balanced_accuracy')} vs baseline "
+        f"{metrics.get('baseline_accuracy')} · signal_edge {metrics.get('signal_edge')}"
+    )
+
+    return {
+        "model_id": model_id,
+        "model_name": model_name,
+        "model_status": status,
+        "run_id": run_id,
+        **result_payload,
+    }

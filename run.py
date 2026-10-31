@@ -14,6 +14,7 @@ interface) but the normal path is config.yaml + this script.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import socket
 import sys
@@ -50,6 +51,11 @@ def _banner(config: AppConfig, url: str, token: str, generated: bool, tls: bool)
     print(f"  symbol      {config.exchange.symbol} {config.exchange.interval}")
     print(f"  data        {config.data_root.resolve()}")
     print(f"  transport   {'HTTPS (self-signed)' if tls else 'HTTP (no TLS)'}")
+    torch_spec = importlib.util.find_spec("torch")
+    print(
+        "  training    "
+        + ("pytorch present (device probed per run)" if torch_spec else "unavailable: pip install torch")
+    )
     if generated:
         print()
         print("  first boot: an API token was generated for you")

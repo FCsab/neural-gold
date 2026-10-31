@@ -48,7 +48,7 @@ def wait_for_job(client: TestClient, job_id: str, timeout: float = 60.0) -> dict
     deadline = time.time() + timeout
     while time.time() < deadline:
         payload = client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
-        if payload["status"] in {"ok", "failed"}:
+        if payload["status"] in {"ok", "failed", "stopped"}:
             return payload
         time.sleep(0.05)
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
@@ -89,8 +89,12 @@ def test_status_payload(client: TestClient):
     assert payload["symbol"] == "PAXGUSDT"
     assert payload["interval"] == "5m"
     assert payload["bar_seconds"] == 300
-    assert payload["training"]["available"] is False
-    assert "reason" in payload["training"]
+    training = payload["training"]
+    assert isinstance(training["available"], bool)
+    if training["available"]:
+        assert "torch" in training
+    else:
+        assert "reason" in training
 
 
 def test_data_info_on_empty_store(client: TestClient):
@@ -205,3 +209,92 @@ def test_websocket_streams_jobs(client: TestClient):
         message = socket.receive_json()
         assert message["type"] == "jobs"
         assert message["jobs"] == []
+
+
+# -- training --------------------------------------------------------------
+def _build_dataset(client: TestClient) -> None:
+    job_id = client.post("/api/dataset/build", headers=AUTH, json={}).json()["job_id"]
+    job = wait_for_job(client, job_id, timeout=120)
+    assert job["status"] == "ok", job
+
+
+def test_train_requires_dataset(client: TestClient):
+    response = client.post("/api/train/start", headers=AUTH, json={"minutes": 1})
+    assert response.status_code == 409
+    assert "dataset" in response.json()["detail"].lower()
+
+
+def test_train_status_reports_torch(client: TestClient):
+    payload = client.get("/api/train/status", headers=AUTH).json()
+    assert payload["dataset_ready"] is False
+    assert payload["availability"]["available"] is True
+    assert "torch" in payload["availability"]
+
+
+def test_training_job_trains_and_registers_a_model(seeded_client: TestClient):
+    _build_dataset(seeded_client)
+
+    response = seeded_client.post(
+        "/api/train/start",
+        headers=AUTH,
+        json={
+            "minutes": 3,
+            "epochs": 1,
+            "window": 16,
+            "batch_size": 128,
+            "patience": 5,
+            "device": "cpu",
+        },
+    )
+    assert response.status_code == 200, response.text
+    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=600)
+
+    assert job["status"] == "ok", job
+    result = job["result"]
+    assert result["model_id"].startswith("model_")
+    assert result["epochs_done"] == 1
+    assert result["checkpoint_path"]
+    assert result["metrics"]["test_rows"] > 0
+
+    models = seeded_client.get("/api/models", headers=AUTH).json()["models"]
+    assert any(model["id"] == result["model_id"] for model in models)
+    stored = next(model for model in models if model["id"] == result["model_id"])
+    assert stored["status"] in {"candidate", "draft"}
+    assert stored["window"] == 16
+
+
+def test_stop_requests_are_honoured(seeded_client: TestClient):
+    _build_dataset(seeded_client)
+
+    job_id = seeded_client.post(
+        "/api/train/start",
+        headers=AUTH,
+        json={
+            "minutes": 10,
+            "epochs": 100000,
+            "window": 16,
+            "batch_size": 128,
+            "patience": 1000,
+            "device": "cpu",
+        },
+    ).json()["job_id"]
+
+    deadline = time.time() + 300
+    ready = False
+    while time.time() < deadline:
+        payload = seeded_client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
+        assert payload["status"] not in {"ok", "failed"}, payload
+        if payload["status"] == "running" and payload["message"].startswith("epoch"):
+            ready = True
+            break
+        time.sleep(0.2)
+    assert ready, "training never started producing epochs"
+
+    assert seeded_client.post(f"/api/jobs/{job_id}/stop", headers=AUTH).status_code == 200
+    job = wait_for_job(seeded_client, job_id, timeout=300)
+    assert job["status"] == "stopped", job
+    assert job["result"]["stop_reason"] == "stopped"
+
+
+def test_stop_unknown_job_is_409(client: TestClient):
+    assert client.post("/api/jobs/nope/stop", headers=AUTH).status_code == 409

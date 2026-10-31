@@ -14,6 +14,7 @@ evidence.
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 import time
 import traceback
@@ -24,6 +25,8 @@ from typing import Any, Callable
 
 MAX_LOG_LINES = 400
 MAX_JOBS = 50
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,6 +44,9 @@ class Job:
     started_at: float | None = None
     finished_at: float | None = None
     log: list[str] = field(default_factory=list)
+    stop_requested: bool = False
+    stop_event: threading.Event = field(default_factory=threading.Event)
+    stop_hooks: list[Callable[[], None]] = field(default_factory=list)
 
     @property
     def running(self) -> bool:
@@ -89,6 +95,18 @@ class JobContext:
     def progress(self, value: float, message: str | None = None) -> None:
         self._manager._update(self._job, message=message, progress=value)
 
+    def should_stop(self) -> bool:
+        """True once someone pressed Stop for this job."""
+        return self._job.stop_event.is_set()
+
+    def on_stop(self, hook: Callable[[], None]) -> None:
+        """Register a callback fired when Stop is pressed.
+
+        Training uses this to set a ``multiprocessing.Event`` the child polls;
+        the job worker only knows about its own threading.Event.
+        """
+        self._manager._add_stop_hook(self._job, hook)
+
 
 class JobManager:
     def __init__(self, max_workers: int = 1):
@@ -134,6 +152,28 @@ class JobManager:
             if len(job.log) > MAX_LOG_LINES:
                 del job.log[: len(job.log) - MAX_LOG_LINES]
 
+    def _add_stop_hook(self, job: Job, hook: Callable[[], None]) -> None:
+        with self._lock:
+            job.stop_hooks.append(hook)
+
+    def request_stop(self, job_id: str) -> bool:
+        """Ask a running job to stop. Returns False if it is not running."""
+        job = self.get(job_id)
+        if job is None or not job.running:
+            return False
+        with self._lock:
+            job.stop_requested = True
+            job.stop_event.set()
+            hooks = list(job.stop_hooks)
+            job.message = "stopping…"
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 - a bad hook must not block the stop
+                log.exception("stop hook for job %s failed", job_id)
+        self._append_log(job, "stop requested")
+        return True
+
     def _set_message(self, job: Job, message: str) -> None:
         with self._lock:
             job.message = message
@@ -157,12 +197,14 @@ class JobManager:
         ctx.log(f"started {job.kind}")
         try:
             result = fn(ctx) or {}
+            stopped = job.stop_requested
             with self._lock:
                 job.result = result
-                job.status = "ok"
-                job.progress = 1.0
-                job.message = "done"
-            ctx.log("finished")
+                job.status = "stopped" if stopped else "ok"
+                if not stopped:
+                    job.progress = 1.0
+                job.message = "stopped" if stopped else "done"
+            ctx.log("stopped" if stopped else "finished")
         except Exception as exc:  # noqa: BLE001 - surface anything to the UI
             with self._lock:
                 job.status = "failed"

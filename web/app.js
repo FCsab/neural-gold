@@ -12,6 +12,7 @@ const state = {
   token: localStorage.getItem(TOKEN_KEY) || "",
   status: null,
   info: null,
+  models: [],
   jobs: [],
   knownStatus: new Map(),
   selectedJob: null,
@@ -52,6 +53,16 @@ const escapeHtml = (text) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+
+const LABEL_NAMES = { "-1": "stop", "0": "timeout", "1": "target" };
+const labelName = (key) => LABEL_NAMES[String(key)] || String(key);
+
+const fmtDuration = (seconds) => {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "–";
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const minutes = Math.floor(total / 60);
+  return minutes ? `${minutes}m ${total % 60}s` : `${total}s`;
+};
 
 const numberOr = (value) => {
   if (value === "" || value === null || value === undefined) return null;
@@ -143,6 +154,11 @@ function switchPanel(name) {
     loadBars();
   }
   if (name === "console" && state.selectedJob) loadLog(state.selectedJob);
+  if (name === "training") {
+    renderTrainingPanel();
+    const job = currentTrainingJob();
+    if (job) updateTrainLog(job.id);
+  }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -157,6 +173,12 @@ async function boot() {
     const job = state.jobs.find((entry) => entry.id === state.selectedJob);
     if (job && (job.status === "running" || job.status === "queued")) loadLog(job.id);
   }, 1200);
+
+  setInterval(() => {
+    if (!$("panel-training").classList.contains("active")) return;
+    const job = currentTrainingJob();
+    if (job && (job.status === "running" || job.status === "queued")) updateTrainLog(job.id);
+  }, 1500);
 
   if (!state.token) {
     showLogin("");
@@ -179,19 +201,23 @@ async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const [status, info, jobs] = await Promise.all([
+    const [status, info, jobs, models] = await Promise.all([
       api("/api/status"),
       api("/api/data/info"),
       api("/api/jobs"),
+      api("/api/models"),
     ]);
     state.status = status;
     state.info = info;
+    state.models = models.models || [];
     applyJobs(jobs.jobs || []);
     renderStatus();
     renderInfo();
     renderDataset();
     renderLeakage();
     renderExchange();
+    renderTraining();
+    renderTrainingPanel();
   } finally {
     state.refreshing = false;
   }
@@ -218,6 +244,7 @@ function applyJobs(jobs) {
   state.jobs = jobs;
   renderJobs();
   renderJobStrip();
+  renderTrainingPanel();
 
   for (const job of finished) {
     if (job.status === "ok") toast(`${job.kind} finished`, "ok");
@@ -615,6 +642,259 @@ function renderExchange() {
     `<tbody>${rows.join("")}</tbody>`;
 }
 
+/* -------------------------------------------------------------- training */
+function trainingAvailability() {
+  return (state.status && state.status.training) || {
+    available: false,
+    reason: "the server did not report training availability",
+  };
+}
+
+function renderTraining() {
+  const availability = trainingAvailability();
+  const badge = $("training-availability");
+  badge.textContent = availability.available ? "ready" : "unavailable";
+  badge.className = "badge " + (availability.available ? "ok" : "bad");
+
+  const parts = [];
+  if (availability.available) {
+    parts.push(`torch ${availability.torch}`);
+    parts.push(
+      availability.gpu_reported == null
+        ? "device probed per run"
+        : availability.gpu_reported
+        ? "GPU reported"
+        : "CPU only"
+    );
+  } else {
+    parts.push(availability.reason || "PyTorch is not installed");
+  }
+  $("training-reason").textContent = parts.join(" · ");
+  renderModels();
+}
+
+function renderModels() {
+  const models = state.models || [];
+  $("model-count").textContent = `(${models.length})`;
+  const table = $("model-table");
+  if (!models.length) {
+    table.innerHTML =
+      '<tbody><tr><td class="muted">no models yet — run a training job</td></tr></tbody>';
+    return;
+  }
+  const rows = models
+    .map((model) => {
+      const metrics = model.metrics || {};
+      return (
+        `<tr><td>${escapeHtml(model.name)}</td><td>${escapeHtml(model.status)}</td>` +
+        `<td class="num">${fmtInt(model.window)}</td>` +
+        `<td class="num">${fmtNum(metrics.balanced_accuracy, 3)}</td>` +
+        `<td class="num">${fmtNum(metrics.test_rows, 0)}</td>` +
+        `<td>${fmtDate(model.created_at)}</td></tr>`
+      );
+    })
+    .join("");
+  table.innerHTML =
+    '<thead><tr><th>model</th><th>status</th><th class="num">window</th>' +
+    '<th class="num">bal. acc</th><th class="num">test rows</th><th>created</th></tr></thead>' +
+    `<tbody>${rows}</tbody>`;
+}
+
+function currentTrainingJob() {
+  const jobs = state.jobs.filter((job) => job.kind === "training");
+  if (!jobs.length) return null;
+  return (
+    jobs.find((job) => job.status === "running" || job.status === "queued") ||
+    jobs[0]
+  );
+}
+
+function renderTrainingPanel() {
+  const job = currentTrainingJob();
+  const badge = $("train-state");
+  const live = $("train-live");
+  const startButton = $("start-training");
+  const stopButton = $("stop-training");
+
+  if (!job) {
+    badge.textContent = "idle";
+    badge.className = "badge";
+    live.innerHTML = "<dt>state</dt><dd>no run yet</dd>";
+    startButton.disabled = false;
+    stopButton.disabled = true;
+    return;
+  }
+
+  const running = job.status === "running" || job.status === "queued";
+  badge.textContent = job.status;
+  badge.className =
+    "badge " +
+    (job.status === "ok"
+      ? "ok"
+      : job.status === "failed"
+      ? "bad"
+      : job.status === "stopped"
+      ? "amber"
+      : "");
+  startButton.disabled = running;
+  stopButton.disabled = !running;
+
+  const elapsed = job.started_at
+    ? (job.finished_at || Date.now() / 1000) - job.started_at
+    : 0;
+  const rows = [
+    ["state", job.status],
+    ["progress", job.message || "–"],
+    ["elapsed", fmtDuration(elapsed)],
+  ];
+  live.innerHTML = rows
+    .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
+    .join("");
+
+  if (job.result && !running) renderTrainResult(job.result);
+}
+
+function sparkline(history) {
+  const values = (history || [])
+    .map((entry) => Number(entry.val_loss))
+    .filter((value) => Number.isFinite(value));
+  if (values.length < 2) return "";
+
+  const width = 240;
+  const height = 56;
+  const pad = 3;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const step = (width - pad * 2) / (values.length - 1);
+
+  const points = values.map((value, index) => {
+    const x = pad + index * step;
+    const y = height - pad - ((value - min) / span) * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = points[points.length - 1].split(",");
+
+  return `<svg class="spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <polyline points="${points.join(" ")}" fill="none" stroke="#d9b25f" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="#d9b25f"/>
+  </svg>`;
+}
+
+function renderTrainResult(result) {
+  const metrics = result.metrics || {};
+  $("train-meta").textContent =
+    `${result.stop_reason} · ${result.epochs_done} epochs · ` +
+    `${fmtDuration(result.duration_s)} · ${result.device}`;
+
+  const summary = [
+    ["balanced accuracy", fmtNum(metrics.balanced_accuracy, 3)],
+    ["baseline (majority)", fmtNum(metrics.baseline_accuracy, 3)],
+    ["accuracy", fmtNum(metrics.accuracy, 3)],
+    ["signal edge", metrics.signal_edge == null ? "–" : fmtPct(metrics.signal_edge)],
+    [
+      "long coverage",
+      metrics.long_coverage == null ? "–" : fmtPct(metrics.long_coverage, 1),
+    ],
+    ["test rows", fmtInt(metrics.test_rows)],
+    ["parameters", fmtInt(result.parameters)],
+    ["device", `${result.device} · ${result.device_note}`],
+  ];
+
+  const perClass = metrics.per_class || {};
+  const classRows = ["1", "0", "-1"]
+    .filter((key) => perClass[key])
+    .map((key) => {
+      const row = perClass[key];
+      return (
+        `<tr><td>${labelName(key)}</td>` +
+        `<td class="num">${fmtNum(row.precision, 3)}</td>` +
+        `<td class="num">${fmtNum(row.recall, 3)}</td>` +
+        `<td class="num">${fmtNum(row.f1, 3)}</td>` +
+        `<td class="num">${fmtInt(row.support)}</td></tr>`
+      );
+    })
+    .join("");
+
+  const matrix = metrics.confusion_matrix || [];
+  const matrixHeader =
+    '<tr><th>actual \\ predicted</th>' +
+    ["-1", "0", "1"].map((key) => `<th class="num">${labelName(key)}</th>`).join("") +
+    "</tr>";
+  const matrixRows = matrix
+    .map((row, index) => {
+      const key = ["-1", "0", "1"][index];
+      return (
+        `<tr><td>${labelName(key)}</td>` +
+        row.map((count) => `<td class="num">${fmtInt(count)}</td>`).join("") +
+        "</tr>"
+      );
+    })
+    .join("");
+
+  $("train-metrics").innerHTML = `
+    <div class="result-grid">
+      <div>
+        <h3 class="subhead">Summary</h3>
+        <dl class="stats">${summary
+          .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
+          .join("")}</dl>
+      </div>
+      <div>
+        <h3 class="subhead">Per class</h3>
+        ${
+          classRows
+            ? `<table class="table"><thead><tr><th>class</th><th class="num">precision</th>` +
+              `<th class="num">recall</th><th class="num">f1</th><th class="num">support</th>` +
+              `</tr></thead><tbody>${classRows}</tbody></table>`
+            : '<p class="muted small">no metrics</p>'
+        }
+      </div>
+    </div>
+    <div class="result-grid">
+      <div>
+        <h3 class="subhead">Confusion matrix</h3>
+        ${
+          matrixRows
+            ? `<table class="table"><thead>${matrixHeader}</thead><tbody>${matrixRows}</tbody></table>`
+            : '<p class="muted small">no metrics</p>'
+        }
+      </div>
+      <div>
+        <h3 class="subhead">Validation loss</h3>
+        ${sparkline(result.history) || '<p class="muted small">no epochs recorded</p>'}
+        <p class="muted small">best epoch ${fmtInt(metrics.best_epoch)} · best val loss ${fmtNum(metrics.best_val_loss, 4)}</p>
+      </div>
+    </div>`;
+}
+
+async function updateTrainLog(jobId) {
+  try {
+    const job = await api(`/api/jobs/${jobId}`);
+    const node = $("train-log");
+    const text = (job.log || []).join("\n") || "(no output)";
+    if (node.textContent !== text) {
+      node.textContent = text;
+      node.scrollTop = node.scrollHeight;
+    }
+  } catch {
+    /* the panel simply keeps the previous log */
+  }
+}
+
+function trainParams() {
+  const minutes = numberOr($("train-minutes").value);
+  return {
+    minutes: minutes === null ? null : minutes,
+    epochs: Number($("train-epochs").value) || 50,
+    window: Number($("train-window").value) || 64,
+    batch_size: Number($("train-batch").value) || 256,
+    lr: Number($("train-lr").value) || 0.0003,
+    patience: Number($("train-patience").value) || 5,
+    device: $("train-device").value,
+  };
+}
+
 /* ----------------------------------------------------------------- events */
 function datasetParams() {
   const params = {
@@ -711,6 +991,26 @@ function bindEvents() {
       { samples: numberOr($("leakage-samples").value) || 10, ...datasetParams() },
       "leakage"
     );
+  });
+
+  $("start-training").addEventListener("click", async () => {
+    const params = trainParams();
+    const jobId = await startJob("/api/train/start", params, "training");
+    if (jobId) {
+      renderTrainingPanel();
+      updateTrainLog(jobId);
+    }
+  });
+
+  $("stop-training").addEventListener("click", async () => {
+    const job = currentTrainingJob();
+    if (!job) return;
+    try {
+      await api(`/api/jobs/${job.id}/stop`, { method: "POST", body: {} });
+      toast("stop requested — checkpoint will be written", "info");
+    } catch (error) {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    }
   });
 }
 

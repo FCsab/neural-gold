@@ -16,6 +16,7 @@ Design notes that matter:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import time
 from dataclasses import replace
@@ -32,6 +33,7 @@ from .. import __version__
 from ..config import AppConfig, ConfigError, FeatureConfig, LabelConfig
 from ..data.store import store_from_config
 from ..exchange.rest import interval_to_ms
+from ..registry import registry_from_config
 from . import reports, tasks
 from .jobs import JobManager
 from .security import ip_allowed, make_auth_dependency, token_matches
@@ -63,6 +65,52 @@ class DatasetParams(BaseModel):
 
 class LeakageParams(DatasetParams):
     samples: int = Field(default=10, ge=1, le=50)
+
+
+class TrainParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # None or 0 = no wall-clock limit: run until Stop is pressed.
+    minutes: float | None = Field(default=10.0, ge=0, le=1440)
+    epochs: int = Field(default=50, ge=1, le=100000)
+    window: int = Field(default=64, ge=8, le=512)
+    batch_size: int = Field(default=256, ge=16, le=4096)
+    lr: float = Field(default=3e-4, gt=0, le=1)
+    patience: int = Field(default=5, ge=1, le=1000)
+    seed: int = Field(default=7, ge=0, le=2**31 - 1)
+    device: Literal["auto", "cpu"] = "auto"
+
+
+def training_availability() -> dict[str, Any]:
+    """Report whether PyTorch is installed without importing it.
+
+    Importing torch in the API process would add ~300 MB of RSS and a couple of
+    seconds of startup for a banner. The training child imports it anyway and
+    probes the device there, which is the only place the answer matters.
+    """
+    try:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):  # pragma: no cover - broken install
+        spec = None
+
+    if spec is None:
+        return {
+            "available": False,
+            "reason": (
+                "PyTorch is not installed in this environment. Install it with: "
+                "pip install torch --index-url https://download.pytorch.org/whl/cpu "
+                "(or /rocm6.4 for an AMD GPU)."
+            ),
+        }
+
+    try:
+        from importlib.metadata import version
+
+        torch_version = version("torch")
+    except Exception:  # pragma: no cover - metadata can be missing in odd installs
+        torch_version = "unknown"
+
+    return {"available": True, "torch": torch_version, "gpu_reported": None}
 
 
 def _parse_iso_ms(text: str | None) -> int | None:
@@ -141,13 +189,7 @@ def create_app(
             "uptime_s": round(time.time() - app.state.started_at, 1),
             "jobs": manager.counts(),
             "tls": app.state.tls,
-            "training": {
-                "available": False,
-                "reason": (
-                    "Build-order step 2 (training workbench + model registry) is not "
-                    "implemented yet. Step 1 (data layer) is fully operable below."
-                ),
-            },
+            "training": training_availability(),
         }
 
     # -- data ------------------------------------------------------------
@@ -269,7 +311,50 @@ def create_app(
         )
         return {"job_id": job.id}
 
+    # -- training --------------------------------------------------------
+    @app.post("/api/train/start")
+    def post_train(params: TrainParams, _: None = Depends(auth)) -> dict[str, Any]:
+        availability = training_availability()
+        if not availability["available"]:
+            raise HTTPException(status_code=409, detail=availability["reason"])
+        if not (config.data_root / "dataset.parquet").is_file():
+            raise HTTPException(
+                status_code=409,
+                detail="no dataset on disk; build one from the Dataset tab first",
+            )
+        payload = params.model_dump()
+        job = manager.submit(
+            "training", payload, lambda ctx: tasks.run_training(config, payload, ctx)
+        )
+        return {"job_id": job.id}
+
+    @app.get("/api/train/status")
+    def train_status(_: None = Depends(auth)) -> dict[str, Any]:
+        return {
+            "availability": training_availability(),
+            "dataset_ready": (config.data_root / "dataset.parquet").is_file(),
+        }
+
+    @app.get("/api/models")
+    def list_models(_: None = Depends(auth)) -> dict[str, Any]:
+        registry = registry_from_config(config)
+        return {"models": registry.list_models(limit=50)}
+
+    @app.get("/api/models/{model_id}")
+    def get_model(model_id: str, _: None = Depends(auth)) -> dict[str, Any]:
+        registry = registry_from_config(config)
+        model = registry.get_model(model_id)
+        if model is None:
+            raise HTTPException(status_code=404, detail="unknown model")
+        return {"model": model, "runs": registry.list_runs(model_id, limit=20)}
+
     # -- jobs ------------------------------------------------------------
+    @app.post("/api/jobs/{job_id}/stop")
+    def stop_job(job_id: str, _: None = Depends(auth)) -> dict[str, Any]:
+        if not manager.request_stop(job_id):
+            raise HTTPException(status_code=409, detail="job is not running")
+        return {"stopped": True}
+
     @app.get("/api/jobs")
     def list_jobs(_: None = Depends(auth)) -> dict[str, Any]:
         return {"jobs": manager.snapshot(include_log=False)}

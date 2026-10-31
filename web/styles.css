@@ -443,6 +443,32 @@ details.card[open] summary::before { content: "▾ "; }
 .job-row .when { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 10.5px; }
 
 /* ------------------------------------------------------------------ log */
+.subhead {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.result-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  margin-bottom: 18px;
+}
+
+.result-grid:last-child { margin-bottom: 0; }
+
+.spark { width: 100%; height: 56px; display: block; }
+
+.log.compact { height: 190px; }
+
+@media (max-width: 900px) {
+  .result-grid { grid-template-columns: 1fr; }
+}
+
 .log {
   background: #070a0f;
   border: 1px solid var(--line-soft);

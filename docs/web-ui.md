@@ -45,9 +45,12 @@ limits). These are never hardcoded anywhere in the codebase.
 **Console** — every job with its log. Jobs are queued and run one at a time,
 deliberately: they share the Parquet store and the single SQLite writer.
 
-**Training** — deliberately empty. Build-order step 2 has not been
-implemented, and a button that does nothing is worse than a clear statement
-of that fact.
+**Training** — start a run with a minutes budget or with no limit at all
+(press Stop when you have seen enough), watch the live epoch counter and log,
+then read the test metrics: per-class precision/recall/F1, the confusion
+matrix, balanced accuracy against the majority baseline, and the validation
+loss curve. Both stopping paths write a checkpoint. Models land in the
+registry below the run panel.
 
 ## API
 
@@ -65,8 +68,13 @@ does not, and contains no data.
 | POST | `/api/dataset/preview` | label counts only → job |
 | POST | `/api/dataset/build` | build and write the dataset → job |
 | POST | `/api/leakage/run` | run the leakage suite → job |
+| POST | `/api/train/start` | `{minutes?, epochs, window, ...}` → training job |
+| GET | `/api/train/status` | torch availability and dataset readiness |
+| GET | `/api/models` | registry listing |
+| GET | `/api/models/{id}` | one model plus its runs |
 | GET | `/api/jobs` | job summaries (no logs) |
 | GET | `/api/jobs/{id}` | one job including its log |
+| POST | `/api/jobs/{id}/stop` | request a cooperative stop |
 | WS | `/api/ws?token=...` | job progress snapshots every 500 ms when changed |
 
 `scripts/smoke.py` exercises this surface against a running server:
@@ -113,6 +121,9 @@ gold_neural/server/
   security.py                token resolution, IP allowlist, auth dependency
   tls.py                     self-signed certificate bootstrap
   reports.py                 data/reports/*.json persistence
+gold_neural/model.py         window transformer + GPU probe
+gold_neural/training.py      training loop, time budget, cooperative stop
+gold_neural/registry.py      SQLite models + training_runs
 web/
   index.html                 single page, six panels
   app.js                     API client, job stream, chart, renderers
@@ -123,10 +134,10 @@ scripts/smoke.py             post-deploy check of the running server
 
 ## Verified
 
-- `pytest`: 59 tests, no network required.
+- `pytest`: 82 tests, no network required.
 - `scripts/smoke.py` against a live server: 12/12 checks, including a
   leakage run through the job API.
 - Headless Chromium: page loads, chart renders 288 candles, all six tabs
-  switch, a label preview started from the browser completes and renders
-  its per-class table, job log streams, zero console errors, no horizontal
-  overflow at 1440 px or 760 px.
+  switch, a label preview and a training run both complete from the browser,
+  the Stop button ends an unbounded run in ~2 s, job log streams, zero
+  console errors, no horizontal overflow at 1440 px or 760 px.
