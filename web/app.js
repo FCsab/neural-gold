@@ -218,6 +218,8 @@ async function refreshAll() {
     renderExchange();
     renderTraining();
     renderTrainingPanel();
+    renderPipeline();
+    renderIntro();
   } finally {
     state.refreshing = false;
   }
@@ -260,6 +262,26 @@ function applyJobs(jobs) {
   }
 }
 
+const JOB_LABELS = {
+  backfill: "Downloading bars",
+  "dataset-build": "Building the dataset",
+  "label-preview": "Counting labels",
+  leakage: "Running the look-ahead check",
+  verify: "Checking stored data",
+  "exchange-info": "Fetching exchange rules",
+  training: "Training",
+};
+
+const jobLabel = (kind) => JOB_LABELS[kind] || kind;
+
+const STOP_REASONS = {
+  completed: "finished all epochs",
+  time_budget: "stopped at the time limit",
+  stopped: "stopped by you",
+  early_stopping: "stopped early, no improvement",
+};
+const stopReasonLabel = (reason) => STOP_REASONS[reason] || reason;
+
 function renderJobStrip() {
   const strip = $("jobstrip");
   const active = state.jobs.find(
@@ -276,8 +298,8 @@ function renderJobStrip() {
     strip.querySelector(".jobstrip-kind").textContent = "idle";
     const last = state.jobs[0];
     strip.querySelector(".jobstrip-msg").textContent = last
-      ? `last: ${last.kind} ${last.status}`
-      : "no job running";
+      ? `Nothing is running. Last action: ${jobLabel(last.kind).toLowerCase()} — ${last.status}.`
+      : "Nothing is running. Anything you start shows up here.";
     $("jobstrip-bar").style.width = "0%";
     return;
   }
@@ -289,9 +311,9 @@ function renderJobStrip() {
   } else {
     $("jobstrip-bar").style.width = Math.round(active.progress * 100) + "%";
   }
-  strip.querySelector(".jobstrip-kind").textContent = active.kind;
+  strip.querySelector(".jobstrip-kind").textContent = jobLabel(active.kind);
   strip.querySelector(".jobstrip-msg").textContent =
-    active.message || active.status;
+    active.status === "queued" ? `queued — ${jobLabel(active.kind).toLowerCase()}` : active.message || "working…";
 }
 
 function renderJobs() {
@@ -450,27 +472,168 @@ async function loadBars() {
 }
 
 /* -------------------------------------------------------------- renderers */
+
+/* -------------------------------------------------------------- guidance */
+function computeStage() {
+  const info = state.info || {};
+  const coverage = info.coverage || {};
+  const rows = coverage.rows || 0;
+  const leakage = info.leakage;
+  const models = state.models || [];
+  return {
+    rows,
+    hasBars: rows > 0,
+    hasDataset: Boolean(info.dataset),
+    datasetRows: info.dataset ? info.dataset.rows : 0,
+    leakageState: leakage ? (leakage.passed ? "pass" : "fail") : "none",
+    models,
+    hasModel: models.length > 0,
+  };
+}
+
+function nextStepFor(stage) {
+  if (!stage.hasBars) {
+    return {
+      panel: "data",
+      text: "Download price history from Binance. Everything else is built from these bars.",
+      action: "Take me there",
+    };
+  }
+  if (!stage.hasDataset) {
+    return {
+      panel: "dataset",
+      text: `You have ${fmtInt(stage.rows)} bars. Turn them into labelled examples the model can learn from.`,
+      action: "Take me there",
+    };
+  }
+  if (stage.leakageState === "none") {
+    return {
+      panel: "leakage",
+      text: "Dataset is built. Now prove the features cannot see the future — this gate exists for a reason.",
+      action: "Take me there",
+    };
+  }
+  if (stage.leakageState === "fail") {
+    return {
+      panel: "leakage",
+      text: "The look-ahead check failed. Do not train until it passes; a leaked model will look brilliant and lose money.",
+      action: "Review the checks",
+      tone: "error",
+    };
+  }
+  if (!stage.hasModel) {
+    return {
+      panel: "training",
+      text: "Data is ready and clean. Train a first model — 10 minutes is a reasonable first budget.",
+      action: "Take me there",
+    };
+  }
+  return {
+    panel: "training",
+    text: "Everything is set up. Train another model, or read the last run's honesty check.",
+    action: "Open training",
+  };
+}
+
+function renderPipeline() {
+  const stage = computeStage();
+
+  const dots = {
+    data: stage.hasBars ? "done" : "",
+    dataset: stage.hasDataset ? "done" : "",
+    leakage:
+      stage.leakageState === "pass" ? "done" : stage.leakageState === "fail" ? "error" : "",
+    training: stage.hasModel ? "done" : "",
+  };
+  Object.entries(dots).forEach(([key, cls]) => {
+    const dot = document.querySelector(`[data-dot="${key}"]`);
+    if (dot) dot.className = "tab-dot" + (cls ? " " + cls : "");
+  });
+
+  const next = nextStepFor(stage);
+  state.nextPanel = next.panel;
+  const banner = $("next-step");
+  banner.hidden = false;
+  banner.className = "nextstep" + (next.tone ? " " + next.tone : "");
+  $("next-step-text").textContent = next.text;
+}
+
+function renderIntro() {
+  const hidden = localStorage.getItem("goldneural.introHidden") === "1";
+  $("intro").hidden = hidden;
+}
+
+function verdictFor(metrics) {
+  if (!metrics || metrics.balanced_accuracy == null) return null;
+  const balanced = Number(metrics.balanced_accuracy);
+  const baseline = Number(metrics.baseline_accuracy);
+  if (!Number.isFinite(balanced) || !Number.isFinite(baseline)) return null;
+  const delta = ((balanced - baseline) * 100).toFixed(1);
+
+  if (balanced > baseline + 0.02) {
+    return {
+      tone: "ok",
+      html: `<strong>Better than guessing.</strong> Balanced accuracy ${fmtPct(
+        balanced,
+        1
+      )} beats the ${fmtPct(baseline, 1)} you get from always picking the most common outcome, by ${delta} points. That is a hint, not proof — check the edge and confirm on data the model has never seen.`,
+    };
+  }
+  if (balanced < baseline - 0.02) {
+    return {
+      tone: "bad",
+      html: `<strong>No edge yet.</strong> Balanced accuracy ${fmtPct(
+        balanced,
+        1
+      )} is below the ${fmtPct(
+        baseline,
+        1
+      )} of always guessing the most common outcome (${delta} points). Short runs look like this. More time, a longer window, or different label levels are the usual next moves.`,
+    };
+  }
+  return {
+    tone: "",
+    html: `<strong>Level with guessing.</strong> Not worse than the baseline, and not useful yet. More epochs or different label settings may change that.`,
+  };
+}
+
 function renderStatus() {
   const status = state.status;
   if (!status) return;
   $("version").textContent = `v${status.version}`;
 
-  const chips = [
-    `<span class="chip">${status.symbol} <strong>${status.interval}</strong></span>`,
-    `<span class="chip">bars <strong>${fmtInt(status.bars)}</strong></span>`,
-    `<span class="chip ${status.tls ? "ok" : "bad"}">${status.tls ? "https" : "http"}</span>`,
-  ];
-  const leakage = state.info && state.info.leakage;
-  if (leakage) {
-    chips.push(
-      `<span class="chip ${leakage.passed ? "ok" : "bad"}">leakage ${
-        leakage.passed ? "pass" : "fail"
-      }</span>`
-    );
-  }
+  const info = state.info || {};
+  const coverage = info.coverage || {};
+  const rows = coverage.rows || 0;
+  const years =
+    coverage.start_ms && coverage.end_ms
+      ? (coverage.end_ms - coverage.start_ms) / (365.25 * 86400000)
+      : null;
+
+  const chips = [`<span class="chip">${status.symbol} · ${status.interval}</span>`];
+  chips.push(
+    `<span class="chip">${
+      rows ? `${fmtInt(rows)} bars${years ? ` · ${years.toFixed(1)} yrs` : ""}` : "no bars yet"
+    }</span>`
+  );
+
+  const leakage = info.leakage;
+  chips.push(
+    leakage
+      ? `<span class="chip ${leakage.passed ? "ok" : "bad"}">look-ahead ${
+          leakage.passed ? "passed" : "FAILED"
+        }</span>`
+      : '<span class="chip">look-ahead not run</span>'
+  );
+
+  const models = state.models || [];
+  chips.push(
+    `<span class="chip">${
+      models.length ? `${models.length} model${models.length === 1 ? "" : "s"}` : "no models yet"
+    }</span>`
+  );
+
   $("status-chips").innerHTML = chips.join("");
-  $("training-reason").textContent =
-    (status.training && status.training.reason) || "";
 }
 
 function renderInfo() {
@@ -479,13 +642,16 @@ function renderInfo() {
   const coverage = info.coverage || {};
   const verify = info.verify;
 
-  const rows = [
-    ["bars", fmtInt(coverage.rows)],
-    ["from", fmtDate(coverage.start_ms)],
-    ["to", fmtDate(coverage.end_ms)],
-    ["partitions", fmtInt((info.partitions || []).length)],
-    ["gaps", verify ? fmtInt(verify.gap_count) : "–"],
-  ];
+  const bars = coverage.rows || 0;
+  const rows = bars
+    ? [
+        ["bars stored", fmtInt(bars)],
+        ["from", fmtDate(coverage.start_ms)],
+        ["to", fmtDate(coverage.end_ms)],
+        ["monthly files", fmtInt((info.partitions || []).length)],
+        ["missing stretches", verify ? fmtInt(verify.gap_count) : "not checked"],
+      ]
+    : [["status", "No price history yet — press “Download bars”."]];
   $("coverage-stats").innerHTML = rows
     .map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`)
     .join("");
@@ -533,8 +699,12 @@ function renderDataset() {
   const stats = $("dataset-stats");
   const table = $("class-table");
 
+  const note = $("class-note");
+  if (note) note.hidden = !report;
+
   if (!report) {
-    stats.innerHTML = '<dt>—</dt><dd class="muted">nothing built yet</dd>';
+    stats.innerHTML =
+      '<dt>—</dt><dd class="muted">Nothing built yet. Press “Build the dataset”.</dd>';
     table.innerHTML = "";
     return;
   }
@@ -719,14 +889,55 @@ function renderTrainingPanel() {
   if (!job) {
     badge.textContent = "idle";
     badge.className = "badge";
-    live.innerHTML = "<dt>state</dt><dd>no run yet</dd>";
     startButton.disabled = false;
     stopButton.disabled = true;
+
+    // Job history is in memory only, but models are persisted. After a restart
+    // the last recorded model with actual metrics is the useful thing to show.
+    // (A run stopped before its first epoch has no metrics at all.)
+    const latest = (state.models || []).find(
+      (model) => model.metrics && Object.keys(model.metrics).length
+    );
+    if (latest) {
+      live.innerHTML =
+        `<dt>state</dt><dd>idle</dd>` +
+        `<dt>last model</dt><dd>${escapeHtml(latest.name)}</dd>` +
+        `<dt>recorded</dt><dd>${fmtDate(latest.created_at)}</dd>`;
+      $("train-log").textContent = "No run in this session. Metrics below are from the registry.";
+      $("train-meta").textContent = `last recorded model · ${fmtDate(latest.created_at)}`;
+      renderTrainResult(
+        {
+          metrics: latest.metrics,
+          history: [],
+          parameters: null,
+          device: null,
+          device_note: "",
+          stop_reason: "recorded",
+          duration_s: null,
+          epochs_done: null,
+        },
+        { stored: true }
+      );
+    } else {
+      live.innerHTML =
+        "<dt>state</dt><dd>No run yet. Pick a time limit above and press “Start training”.</dd>";
+      $("train-log").textContent = "Start a run to see its progress here.";
+      $("train-meta").textContent = "";
+      $("train-metrics").innerHTML =
+        '<p class="muted small">No finished run yet.</p>';
+    }
     return;
   }
 
   const running = job.status === "running" || job.status === "queued";
   badge.textContent = job.status;
+
+  if (running) {
+    // A new run invalidates whatever the panel was showing.
+    $("train-meta").textContent = "";
+    $("train-metrics").innerHTML =
+      '<p class="muted small">Waiting for the first epoch…</p>';
+  }
   badge.className =
     "badge " +
     (job.status === "ok"
@@ -751,7 +962,18 @@ function renderTrainingPanel() {
     .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
     .join("");
 
-  if (job.result && !running) renderTrainResult(job.result);
+  if (job.result && !running) {
+    const hasMetrics = job.result.metrics && job.result.metrics.test_rows;
+    if (hasMetrics) {
+      renderTrainResult(job.result);
+    } else {
+      $("train-meta").textContent = stopReasonLabel(job.result.stop_reason);
+      const note =
+        (job.result.metrics && job.result.metrics.note) ||
+        "Stopped before the first epoch finished, so there are no test metrics. Give it a longer time limit.";
+      $("train-metrics").innerHTML = `<p class="muted small">${escapeHtml(note)}</p>`;
+    }
+  }
 }
 
 function sparkline(history) {
@@ -781,25 +1003,30 @@ function sparkline(history) {
   </svg>`;
 }
 
-function renderTrainResult(result) {
+function renderTrainResult(result, options = {}) {
+  const stored = Boolean(options.stored);
   const metrics = result.metrics || {};
-  $("train-meta").textContent =
-    `${result.stop_reason} · ${result.epochs_done} epochs · ` +
-    `${fmtDuration(result.duration_s)} · ${result.device}`;
+  if (!stored) {
+    $("train-meta").textContent =
+      `${stopReasonLabel(result.stop_reason)} · ${result.epochs_done} epochs · ` +
+      `${fmtDuration(result.duration_s)} · ${result.device}`;
+  }
 
   const summary = [
-    ["balanced accuracy", fmtNum(metrics.balanced_accuracy, 3)],
-    ["baseline (majority)", fmtNum(metrics.baseline_accuracy, 3)],
-    ["accuracy", fmtNum(metrics.accuracy, 3)],
-    ["signal edge", metrics.signal_edge == null ? "–" : fmtPct(metrics.signal_edge)],
+    ["Balanced accuracy", fmtNum(metrics.balanced_accuracy, 3)],
+    ["Always-guess baseline", fmtNum(metrics.baseline_accuracy, 3)],
+    ["Plain accuracy", fmtNum(metrics.accuracy, 3)],
+    ["Edge (buy minus stop)", metrics.signal_edge == null ? "–" : fmtPct(metrics.signal_edge)],
     [
-      "long coverage",
+      "Bars it wanted to buy",
       metrics.long_coverage == null ? "–" : fmtPct(metrics.long_coverage, 1),
     ],
-    ["test rows", fmtInt(metrics.test_rows)],
-    ["parameters", fmtInt(result.parameters)],
-    ["device", `${result.device} · ${result.device_note}`],
+    ["Test rows", fmtInt(metrics.test_rows)],
   ];
+  if (!stored) {
+    summary.push(["Parameters", fmtInt(result.parameters)]);
+    summary.push(["Device", `${result.device} · ${result.device_note}`]);
+  }
 
   const perClass = metrics.per_class || {};
   const classRows = ["1", "0", "-1"]
@@ -832,21 +1059,29 @@ function renderTrainResult(result) {
     })
     .join("");
 
+  const verdict = verdictFor(metrics);
   $("train-metrics").innerHTML = `
+    ${verdict ? `<div class="verdict ${verdict.tone}">${verdict.html}</div>` : ""}
     <div class="result-grid">
       <div>
         <h3 class="subhead">Summary</h3>
         <dl class="stats">${summary
           .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
           .join("")}</dl>
+        <p class="hint" style="margin-top:12px">
+          Balanced accuracy is the average recall across the three outcomes, so a
+          model cannot win by always guessing the common one. Edge is the average
+          return when it said “buy” minus the average when it said “stop”, before fees.
+        </p>
       </div>
       <div>
         <h3 class="subhead">Per class</h3>
         ${
           classRows
-            ? `<table class="table"><thead><tr><th>class</th><th class="num">precision</th>` +
-              `<th class="num">recall</th><th class="num">f1</th><th class="num">support</th>` +
-              `</tr></thead><tbody>${classRows}</tbody></table>`
+            ? `<table class="table"><thead><tr><th>outcome</th><th class="num">precision</th>` +
+              `<th class="num">recall</th><th class="num">f1</th><th class="num">real cases</th>` +
+              `</tr></thead><tbody>${classRows}</tbody></table>` +
+              `<p class="hint" style="margin-top:8px">precision = when it said this, how often it was right. recall = of all the real cases, how many it caught.</p>`
             : '<p class="muted small">no metrics</p>'
         }
       </div>
@@ -856,7 +1091,8 @@ function renderTrainResult(result) {
         <h3 class="subhead">Confusion matrix</h3>
         ${
           matrixRows
-            ? `<table class="table"><thead>${matrixHeader}</thead><tbody>${matrixRows}</tbody></table>`
+            ? `<table class="table"><thead>${matrixHeader}</thead><tbody>${matrixRows}</tbody></table>` +
+              `<p class="hint" style="margin-top:8px">Rows are what really happened, columns what the model predicted. The diagonal is where it was right.</p>`
             : '<p class="muted small">no metrics</p>'
         }
       </div>
@@ -958,6 +1194,15 @@ function bindEvents() {
       .forEach((node) => node.classList.toggle("active", node === button));
     state.rangeBars = Number(button.dataset.bars);
     loadBars();
+  });
+
+  $("next-step-action").addEventListener("click", () => {
+    if (state.nextPanel) switchPanel(state.nextPanel);
+  });
+
+  $("dismiss-intro").addEventListener("click", () => {
+    localStorage.setItem("goldneural.introHidden", "1");
+    $("intro").hidden = true;
   });
 
   $("refresh-bars").addEventListener("click", loadBars);

@@ -36,15 +36,18 @@ remembers it.
   transport   HTTPS (self-signed)
 ```
 
-From there:
+The page is a numbered four-step guide — market data, labels, look-ahead
+check, training — with a status dot per step and a “next step” banner that
+always names the one thing left to do. Every control has a plain-English
+help line, and training results open with a verdict in words before the
+numbers.
 
-- **Data** — candlestick chart, coverage, partitions, gaps, backfill, verify.
-- **Dataset** — triple-barrier sliders, label preview, build + write Parquet.
-- **Leakage** — run the mandatory suite, see every check and its metrics.
-- **Exchange** — fetch and cache `exchangeInfo` filters.
-- **Console** — every job, live progress, full log.
-- **Training** — start a run for N minutes or until you press Stop, watch
-  the loss curve, and read per-class metrics and the confusion matrix.
+- **1 Market data** — candlestick chart, what is stored, data check, backfill.
+- **2 Labels & dataset** — barrier settings, label preview, build Parquet.
+- **3 Look-ahead check** — the mandatory leakage suite, with metrics.
+- **4 Training** — run for N minutes or until you press Stop.
+- **Exchange rules** — fetch and cache `exchangeInfo` filters.
+- **Activity** — every job, live progress, full log.
 
 See `docs/web-ui.md` for the API surface, security posture, and the reasoning
 behind the no-build-step frontend.
@@ -157,6 +160,8 @@ Against live Binance data on 2026-10-31:
 - `scripts/smoke.py` against the running server: 12/12 checks.
 - Headless Chromium: chart renders, all six tabs work, a label preview and a
   training run both start and finish from the browser, zero console errors.
+- Guidance checked against both an empty data root and the populated one: the
+  next-step banner, tab dots, intro card and empty states all follow state.
 - Training on the RX 7600 XT (ROCm): 10 epochs over 210k rows in 121 s,
   stopped exactly at the 2-minute budget, checkpoint written, balanced
   accuracy 0.403 against a 0.485 majority baseline — recorded as `draft`,

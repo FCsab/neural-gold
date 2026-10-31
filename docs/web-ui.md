@@ -25,32 +25,63 @@ The certificate is self-signed, so the browser shows a warning once per
 device. For anything beyond a trusted LAN, point `server.cert_path` and
 `server.key_path` at a real certificate.
 
+## The page is a four-step guide
+
+The work is a pipeline, so the UI is numbered like one:
+
+```
+1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training
+```
+
+Each tab shows a status dot (grey = not done, green = done, red = failed), and
+a **Next step** banner above the tabs always names the one thing to do next and
+takes you there. A first-run card explains what the whole thing is and can be
+dismissed. Every panel opens with one sentence of context, and every control
+has a line of plain-English help under it.
+
+Jargon is kept but always explained:
+
+| Term | What it says in the UI |
+|---|---|
+| `k_up` / `k_down` | profit target / stop loss, in multiples of typical movement |
+| `max_holding_bars` | max holding time |
+| `feature_lag` | information delay |
+| ATR | “typical bar movement” |
+| leakage | look-ahead check — the model must not see the future |
+| partitions | monthly files |
+| gaps | missing stretches |
+
+Training results open with a verdict in words before the numbers: *“No edge
+yet. Balanced accuracy 39.3% is below the 48.5% of always guessing the most
+common outcome.”* The tables underneath carry a one-line explanation of what
+precision, recall and the confusion matrix mean.
+
 ## What each tab does
 
-**Data** — candlestick chart of stored bars (24h / 7d / 30d), coverage
-summary, partition table, gap count, a backfill form, and a "verify stored
-bars" job that re-checks OHLC ordering, duplicates and missing bars.
+**Market data** — candlestick chart of stored bars (24h / 7d / 30d), what is
+stored, a data check that looks for broken candles, duplicates and missing
+stretches, and a download form that resumes where the stored data ends.
 
-**Dataset** — triple-barrier sliders (`k_up`, `k_down`, holding horizon, ATR
-period, feature lag, same-bar ambiguity). *Preview labels* shows class counts
-and per-class realised return without writing anything; *Build dataset*
-writes `data/dataset.parquet` and records the exact parameters used.
+**Labels & dataset** — the triple-barrier settings with a help line each.
+*Preview the counts* shows how many bars would fall into each outcome without
+writing anything; *Build the dataset* writes `data/dataset.parquet` and records
+the exact parameters used.
 
-**Leakage** — runs the mandatory suite with the current label parameters and
-shows every check with its metrics. A failure turns the header chip red.
+**Look-ahead check** — runs the mandatory suite with the current label
+settings and shows every check with its metrics. A failure turns the tab dot
+red and the next-step banner says not to train.
 
-**Exchange** — caches `exchangeInfo` filters (tick size, step size, notional
-limits). These are never hardcoded anywhere in the codebase.
+**Training** — start with a minutes budget, or leave it empty and press Stop
+when you have seen enough. Shows the live epoch counter and log, then the
+verdict, per-class table, confusion matrix and validation loss. After a
+restart the panel falls back to the newest model in the registry, so results
+do not disappear with the job list.
 
-**Console** — every job with its log. Jobs are queued and run one at a time,
+**Exchange rules** — cached `exchangeInfo` filters (tick size, step size,
+notional limits). Never hardcoded anywhere in the codebase.
+
+**Activity** — every job with its log. Jobs are queued and run one at a time,
 deliberately: they share the Parquet store and the single SQLite writer.
-
-**Training** — start a run with a minutes budget or with no limit at all
-(press Stop when you have seen enough), watch the live epoch counter and log,
-then read the test metrics: per-class precision/recall/F1, the confusion
-matrix, balanced accuracy against the majority baseline, and the validation
-loss curve. Both stopping paths write a checkpoint. Models land in the
-registry below the run panel.
 
 ## API
 
@@ -141,3 +172,6 @@ scripts/smoke.py             post-deploy check of the running server
   switch, a label preview and a training run both complete from the browser,
   the Stop button ends an unbounded run in ~2 s, job log streams, zero
   console errors, no horizontal overflow at 1440 px or 760 px.
+- Guidance layer: checked against a fresh empty data root and against the
+  populated one — the next-step banner, tab dots, intro card and empty states
+  all follow the real state.
