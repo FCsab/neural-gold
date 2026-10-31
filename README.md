@@ -36,9 +36,9 @@ remembers it.
   transport   HTTPS (self-signed)
 ```
 
-The page is a numbered five-step guide — market data, labels, look-ahead
-check, training, backtest — with a status dot per step and a “next step”
-banner that always names the one thing left to do. Every control has a plain-English
+The page is a numbered six-step guide — market data, labels, look-ahead
+check, training, backtest, auto-search — with a status dot per step and a
+“next step” banner that always names the one thing left to do. Every control has a plain-English
 help line, and training results open with a verdict in words before the
 numbers.
 
@@ -48,6 +48,9 @@ numbers.
 - **4 Training** — run for N minutes or until you press Stop.
 - **5 Backtest** — replay the unseen test slice as trades with fees and
   slippage, equity curve against buy-and-hold.
+- **6 Auto-search** — sweep label settings unattended for hours; picks the
+  winner on validation, reports it on test, and skips settings that cannot
+  pay for their own fees.
 - **Exchange rules** — fetch and cache `exchangeInfo` filters.
 - **Activity** — every job, live progress, full log.
 
@@ -98,6 +101,7 @@ gold_neural/
   model.py             window transformer + mandatory GPU probe
   training.py          training loop: time budget, cooperative stop, metrics
   backtest.py          trade simulation: fees, slippage, equity, buy-and-hold
+  search.py            candidate grid, cost pruning, validation scoring
   registry.py          SQLite model + training-run registry
   cli.py               headless backfill / dataset / labels / leakage
   server/              FastAPI app, job queue, auth, TLS, reports
@@ -159,12 +163,15 @@ Against live Binance data on 2026-10-31:
 - 210,384 five-minute bars over 730 days, zero gaps, OHLC verification clean.
 - 210,322 feature rows × 21 features; walk-forward split 147k / 31.5k / 31.5k.
 - Leakage suite: PASS on the real series.
-- `pytest`: 82 tests, no network required.
+- `pytest`: 110 tests, no network required.
 - `scripts/smoke.py` against the running server: 12/12 checks.
 - Headless Chromium: chart renders, all six tabs work, a label preview and a
   training run both start and finish from the browser, zero console errors.
 - Guidance checked against both an empty data root and the populated one: the
   next-step banner, tab dots, intro card and empty states all follow state.
+- Auto-search: a real 3-candidate sweep and a live 2-candidate sweep, watched
+  in the browser — the leaderboard gained a row while the job was still
+  running, and the final state read `done` with 2/2 candidates.
 - Training on the RX 7600 XT (ROCm): 10 epochs over 210k rows in 121 s,
   stopped exactly at the 2-minute budget, checkpoint written, balanced
   accuracy 0.403 against a 0.485 majority baseline — recorded as `draft`,

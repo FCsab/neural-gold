@@ -437,6 +437,8 @@ button.ghost:hover { color: var(--text); }
 }
 
 .table td.num { text-align: right; }
+.table td.pos { color: #8fd0a9; }
+.table td.neg { color: #eb9a9a; }
 
 details.card summary {
   cursor: pointer;

@@ -67,6 +67,22 @@ class LeakageParams(DatasetParams):
     samples: int = Field(default=10, ge=1, le=50)
 
 
+class SearchParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_minutes: float = Field(default=180.0, gt=0, le=720)
+    per_candidate_minutes: float = Field(default=4.0, gt=0, le=60)
+    max_candidates: int = Field(default=40, ge=1, le=200)
+    epochs: int = Field(default=400, ge=1, le=100000)
+    batch_size: int = Field(default=512, ge=16, le=4096)
+    lr: float = Field(default=3e-4, gt=0, le=1)
+    device: Literal["auto", "cpu"] = "auto"
+    fee_bps: float = Field(default=10.0, ge=0, le=100)
+    slippage_bps: float = Field(default=2.0, ge=0, le=100)
+    initial_equity: float = Field(default=10_000.0, gt=0, le=10_000_000)
+    refine_top: int = Field(default=2, ge=0, le=10)
+
+
 class BacktestParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -218,6 +234,7 @@ def create_app(
             "dataset": reports.read_report(config, "dataset"),
             "leakage": reports.read_report(config, "leakage"),
             "backtest": reports.read_report(config, "backtest"),
+            "search": reports.read_report(config, "search"),
             "verify": reports.read_report(config, "verify"),
             "exchange": reports.read_report(config, "exchange"),
         }
@@ -378,6 +395,26 @@ def create_app(
         report = reports.read_report(config, "backtest")
         if report is None:
             raise HTTPException(status_code=404, detail="no backtest has been run")
+        return report
+
+    # -- automated search -------------------------------------------------
+    @app.post("/api/search/start")
+    def post_search(params: SearchParams, _: None = Depends(auth)) -> dict[str, Any]:
+        if store_from_config(config).coverage().rows == 0:
+            raise HTTPException(
+                status_code=409, detail="no bars stored; download market data first"
+            )
+        payload = params.model_dump()
+        job = manager.submit(
+            "search", payload, lambda ctx: tasks.run_search(config, payload, ctx)
+        )
+        return {"job_id": job.id}
+
+    @app.get("/api/search/last")
+    def search_last(_: None = Depends(auth)) -> dict[str, Any]:
+        report = reports.read_report(config, "search")
+        if report is None:
+            raise HTTPException(status_code=404, detail="no search has been run")
         return report
 
     # -- jobs ------------------------------------------------------------

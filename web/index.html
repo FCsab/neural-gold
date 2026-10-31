@@ -50,6 +50,7 @@
   <button data-panel="leakage"><span class="tab-num">3</span>Look-ahead check<span class="tab-dot" data-dot="leakage"></span></button>
   <button data-panel="training"><span class="tab-num">4</span>Training<span class="tab-dot" data-dot="training"></span></button>
   <button data-panel="backtest"><span class="tab-num">5</span>Backtest<span class="tab-dot" data-dot="backtest"></span></button>
+  <button data-panel="search"><span class="tab-num">6</span>Auto-search<span class="tab-dot" data-dot="search"></span></button>
   <span class="tabs-gap"></span>
   <button data-panel="exchange" class="tab-secondary">Exchange rules</button>
   <button data-panel="console" class="tab-secondary">Activity<span class="badge hidden" id="job-badge">0</span></button>
@@ -400,6 +401,78 @@
     <summary>Recent trades <span class="muted small" id="bt-trade-count"></span></summary>
     <div class="table-wrap"><table class="table" id="bt-trades"></table></div>
   </details>
+</section>
+
+
+<!-- --------------------------------------------------------------- search -->
+<section class="panel" id="panel-search">
+  <p class="panel-intro">
+    Tries many profit-target / stop / holding combinations, trains a model for
+    each, and ranks them by how they would have done on <strong>validation</strong>
+    data — history the model never trained on. Settings whose target cannot pay
+    for the round-trip cost are skipped before any training happens, so the
+    hours go to candidates that could plausibly work. Every result is written to
+    disk as it lands, so you can leave it running and come back later.
+  </p>
+
+  <div class="row">
+    <div class="card">
+      <div class="card-head"><h2>Budget</h2></div>
+      <form id="search-form" class="grid-form">
+        <label>Total hours
+          <input id="search-hours" type="number" step="0.5" min="0.1" max="12" value="3" />
+          <span class="hint">The sweep stops here, wherever it is.</span>
+        </label>
+        <label>Minutes per candidate
+          <input id="search-per" type="number" step="1" min="1" max="60" value="4" />
+          <span class="hint">Training time for each setting. More time = better models, fewer settings.</span>
+        </label>
+        <label>Max candidates
+          <input id="search-max" type="number" step="1" min="1" max="200" value="40" />
+        </label>
+        <label>Fees (bps per side)
+          <input id="search-fees" type="number" step="1" min="0" max="100" value="10" />
+        </label>
+        <label>Slippage (bps per side)
+          <input id="search-slip" type="number" step="1" min="0" max="100" value="2" />
+        </label>
+        <label>Device
+          <select id="search-device">
+            <option value="auto">automatic (test the GPU)</option>
+            <option value="cpu">CPU only</option>
+          </select>
+        </label>
+      </form>
+      <div class="controls">
+        <button class="primary" id="start-search">Start the search</button>
+        <button id="stop-search" disabled>Stop</button>
+      </div>
+      <p class="hint" id="search-note"></p>
+    </div>
+
+    <div class="card grow">
+      <div class="card-head"><h2>Progress</h2><span class="badge" id="search-state">never run</span></div>
+      <dl class="stats" id="search-stats"><dt>—</dt><dd>No search yet.</dd></dl>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="search-best"></span></div>
+      <div class="table-wrap"><table class="table" id="search-table"></table></div>
+      <p class="hint" style="margin-top:8px">
+        Ranked on <strong>validation</strong> return after costs. The test column is
+        data the model never saw, but the settings were chosen on validation — so
+        test is the honest estimate and validation is the optimistic one.
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Best candidate — validation equity</h2><span class="muted small" id="search-curve-meta"></span></div>
+    <div id="search-chart" class="chart"></div>
+    <p class="hint" style="margin-top:8px">What the best setting so far would have made on validation, after fees and slippage.</p>
+  </div>
 </section>
 
 </main>

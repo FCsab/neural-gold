@@ -21,6 +21,9 @@ const state = {
   btChart: null,
   btSeries: null,
   btHoldSeries: null,
+  search: null,
+  searchChart: null,
+  searchSeries: null,
   rangeBars: 288,
   ws: null,
   wsRetry: null,
@@ -166,6 +169,10 @@ function switchPanel(name) {
     ensureBtChart();
     renderBacktestChart();
   }
+  if (name === "search") {
+    ensureSearchChart();
+    renderSearch();
+  }
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -186,6 +193,21 @@ async function boot() {
     const job = currentTrainingJob();
     if (job && (job.status === "running" || job.status === "queued")) updateTrainLog(job.id);
   }, 1500);
+
+  // The sweep writes its report after every candidate; poll it so the
+  // leaderboard fills in while the job is still running.
+  setInterval(() => {
+    const running = state.jobs.some(
+      (job) => job.kind === "search" && (job.status === "running" || job.status === "queued")
+    );
+    if (!running) return;
+    api("/api/search/last")
+      .then((report) => {
+        state.search = report;
+        renderSearch();
+      })
+      .catch(() => {});
+  }, 3000);
 
   if (!state.token) {
     showLogin("");
@@ -217,6 +239,7 @@ async function refreshAll() {
     state.status = status;
     state.info = info;
     state.models = models.models || [];
+    if (info.search) state.search = info.search;
     applyJobs(jobs.jobs || []);
     renderStatus();
     renderInfo();
@@ -226,6 +249,7 @@ async function refreshAll() {
     renderTraining();
     renderTrainingPanel();
     renderBacktest();
+    renderSearch();
     renderPipeline();
     renderIntro();
   } finally {
@@ -279,6 +303,7 @@ const JOB_LABELS = {
   "exchange-info": "Fetching exchange rules",
   training: "Training",
   backtest: "Backtesting",
+  search: "Searching settings",
 };
 
 const jobLabel = (kind) => JOB_LABELS[kind] || kind;
@@ -498,6 +523,8 @@ function computeStage() {
     models,
     hasModel: models.length > 0,
     hasBacktest: Boolean(info.backtest),
+    search: info.search || null,
+    hasSearch: Boolean(info.search),
   };
 }
 
@@ -545,10 +572,24 @@ function nextStepFor(stage) {
       action: "Take me there",
     };
   }
+  if (!stage.hasSearch) {
+    return {
+      panel: "search",
+      text: "Let the machine try dozens of label settings while you are away — it skips the ones that cannot pay for their fees.",
+      action: "Take me there",
+    };
+  }
+  if (stage.search && stage.search.status === "running") {
+    return {
+      panel: "search",
+      text: "A sweep is running. Results appear on the leaderboard as each candidate finishes.",
+      action: "Watch it",
+    };
+  }
   return {
-    panel: "backtest",
-    text: "Everything is set up. Re-run the backtest with different costs, or train another model.",
-    action: "Open backtest",
+    panel: "search",
+    text: "Everything is set up. Review the best candidate, or start another sweep with a different budget.",
+    action: "Open auto-search",
   };
 }
 
@@ -562,6 +603,7 @@ function renderPipeline() {
       stage.leakageState === "pass" ? "done" : stage.leakageState === "fail" ? "error" : "",
     training: stage.hasModel ? "done" : "",
     backtest: stage.hasBacktest ? "done" : "",
+    search: stage.search && stage.search.status === "done" ? "done" : "",
   };
   Object.entries(dots).forEach(([key, cls]) => {
     const dot = document.querySelector(`[data-dot="${key}"]`);
@@ -1324,6 +1366,153 @@ function renderBacktest() {
   renderBacktestChart();
 }
 
+/* ---------------------------------------------------------------- search */
+function searchParams() {
+  return {
+    total_minutes: (Number($("search-hours").value) || 3) * 60,
+    per_candidate_minutes: Number($("search-per").value) || 4,
+    max_candidates: Number($("search-max").value) || 40,
+    fee_bps: numberOr($("search-fees").value) ?? 10,
+    slippage_bps: numberOr($("search-slip").value) ?? 2,
+    device: $("search-device").value,
+  };
+}
+
+function ensureSearchChart() {
+  if (state.searchChart || typeof LightweightCharts === "undefined") return;
+  const container = $("search-chart");
+  state.searchChart = LightweightCharts.createChart(container, {
+    width: container.clientWidth,
+    height: container.clientHeight || 320,
+    layout: { background: { color: "#11161f" }, textColor: "#7d8ca1", fontSize: 11 },
+    grid: { vertLines: { color: "#161d29" }, horzLines: { color: "#161d29" } },
+    rightPriceScale: { borderColor: "#1d2634" },
+    timeScale: { borderColor: "#1d2634", timeVisible: true },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+  state.searchSeries = state.searchChart.addLineSeries({
+    color: "#d9b25f",
+    lineWidth: 2,
+    priceFormat: { type: "price", precision: 0, minMove: 1 },
+  });
+  new ResizeObserver(() => {
+    if (!state.searchChart) return;
+    state.searchChart.applyOptions({
+      width: container.clientWidth,
+      height: container.clientHeight,
+    });
+  }).observe(container);
+}
+
+function renderSearchChart(report) {
+  if (!state.searchSeries || !report) return;
+  const seen = new Set();
+  const points = [];
+  for (const point of report.best_curve || []) {
+    const time = Math.floor(point.time);
+    if (seen.has(time)) continue;
+    seen.add(time);
+    points.push({ time, value: point.equity });
+  }
+  points.sort((a, b) => a.time - b.time);
+  state.searchSeries.setData(points);
+  state.searchChart.timeScale().fitContent();
+}
+
+function renderSearch() {
+  const jobRunning = state.jobs.some(
+    (job) => job.kind === "search" && (job.status === "running" || job.status === "queued")
+  );
+  // While a new sweep is starting, do not show the previous run's leaderboard:
+  // it looks like results for the run that is just beginning.
+  const report = state.search || (!jobRunning ? state.info && state.info.search : null);
+  const badge = $("search-state");
+  const table = $("search-table");
+
+  if (!report) {
+    badge.textContent = jobRunning ? "starting" : "never run";
+    badge.className = "badge" + (jobRunning ? " amber" : "");
+    $("search-stats").innerHTML = jobRunning
+      ? '<dt>—</dt><dd>Starting the sweep…</dd>'
+      : '<dt>—</dt><dd>No search yet. Set a budget and press “Start the search”.</dd>';
+    $("search-best").textContent = "";
+    $("search-note").textContent = "";
+    $("search-curve-meta").textContent = "";
+    table.innerHTML = "";
+    $("stop-search").disabled = true;
+    return;
+  }
+
+  const running = report.status === "running" || jobRunning;
+  badge.textContent = running ? "running" : report.status;
+  badge.className = "badge " + (report.status === "done" && !running ? "ok" : running ? "amber" : "");
+
+  const rows = [
+    [
+      "candidates finished",
+      `${fmtInt(report.candidates_done)} / ${fmtInt(report.candidates_total)}`,
+    ],
+    ["elapsed", `${fmtNum(report.elapsed_minutes, 1)} min`],
+    ["mean ATR", `${fmtNum(report.atr_bps, 1)} bps`],
+    ["round-trip cost", `${fmtInt(report.round_trip_cost_bps)} bps`],
+    ["best so far", report.best ? report.best.candidate.key : "–"],
+    [
+      "best validation",
+      report.best ? fmtPct(report.best.validation.metrics.total_return, 2) : "–",
+    ],
+    ["best test", report.best ? fmtPct(report.best.test.metrics.total_return, 2) : "–"],
+  ];
+  $("search-stats").innerHTML = rows
+    .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
+    .join("");
+
+  $("search-note").textContent =
+    `Candidates must aim at least ${fmtNum(report.round_trip_cost_bps * 2.5, 0)} bps ` +
+    `(2.5x the ${fmtNum(report.round_trip_cost_bps, 0)} bps round trip) or they are skipped.`;
+
+  $("search-best").textContent = report.best
+    ? report.best.test.verdict
+      ? report.best.test.verdict.text
+      : ""
+    : "";
+
+  const ranked = report.leaderboard || [];
+  if (!ranked.length) {
+    table.innerHTML =
+      '<tbody><tr><td class="muted">' +
+      (running ? "first candidate is training…" : "no candidate produced a usable model") +
+      "</td></tr></tbody>";
+  } else {
+    const body = ranked
+      .map((row) => {
+        const candidate = row.candidate;
+        const validation = row.validation.metrics;
+        const test = row.test.metrics;
+        const cls = (value) => (value >= 0 ? "pos" : "neg");
+        return (
+          `<tr><td class="num">${fmtInt(row.rank)}</td>` +
+          `<td class="num">${candidate.k_up}</td><td class="num">${candidate.k_down}</td>` +
+          `<td class="num">${fmtInt(candidate.holding)}</td><td class="num">${fmtInt(candidate.window)}</td>` +
+          `<td class="num ${cls(validation.total_return)}">${fmtPct(validation.total_return, 2)}</td>` +
+          `<td class="num">${fmtInt(validation.trades)}</td>` +
+          `<td class="num ${cls(test.total_return)}">${fmtPct(test.total_return, 2)}</td></tr>`
+        );
+      })
+      .join("");
+    table.innerHTML =
+      '<thead><tr><th class="num">#</th><th class="num">target x</th><th class="num">stop x</th>' +
+      '<th class="num">hold</th><th class="num">window</th><th class="num">validation</th>' +
+      '<th class="num">trades</th><th class="num">test</th></tr></thead>' +
+      `<tbody>${body}</tbody>`;
+  }
+
+  $("search-curve-meta").textContent = report.best
+    ? `${report.best.model_name || report.best.candidate.key}`
+    : "";
+  ensureSearchChart();
+  renderSearchChart(report);
+}
+
 /* ----------------------------------------------------------------- events */
 function datasetParams() {
   const params = {
@@ -1433,6 +1622,29 @@ function bindEvents() {
 
   $("run-backtest").addEventListener("click", () => {
     startJob("/api/backtest/run", backtestParams(), "backtest");
+  });
+
+  $("start-search").addEventListener("click", async () => {
+    const jobId = await startJob("/api/search/start", searchParams(), "search");
+    if (jobId) {
+      state.search = null;
+      renderSearch();
+    }
+  });
+
+  $("stop-search").addEventListener("click", async () => {
+    const job = state.jobs.find(
+      (entry) =>
+        entry.kind === "search" &&
+        (entry.status === "running" || entry.status === "queued")
+    );
+    if (!job) return;
+    try {
+      await api(`/api/jobs/${job.id}/stop`, { method: "POST", body: {} });
+      toast("stop requested — the current candidate will finish and save", "info");
+    } catch (error) {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    }
   });
 
   $("start-training").addEventListener("click", async () => {

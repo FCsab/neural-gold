@@ -354,3 +354,35 @@ def test_backtest_after_training_produces_an_equity_curve(seeded_client: TestCli
 
     last = seeded_client.get("/api/backtest/last", headers=AUTH).json()
     assert last["model"]["id"].startswith("model_")
+
+
+# -- automated search ------------------------------------------------------
+def test_search_requires_bars(client: TestClient):
+    assert client.post("/api/search/start", headers=AUTH, json={}).status_code == 409
+
+
+def test_search_sweep_runs_and_is_recorded(seeded_client: TestClient):
+    response = seeded_client.post(
+        "/api/search/start",
+        headers=AUTH,
+        json={
+            "total_minutes": 2,
+            "per_candidate_minutes": 0.3,
+            "max_candidates": 2,
+            "epochs": 2,
+            "device": "cpu",
+            "refine_top": 0,
+        },
+    )
+    assert response.status_code == 200, response.text
+    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=900)
+
+    assert job["status"] in {"ok", "stopped"}, job
+    report = job["result"]
+    assert report["candidates_total"] >= 1
+    assert report["candidates_done"] >= 1
+    assert report["rows"]
+    assert report["round_trip_cost_bps"] == 24.0
+
+    live = seeded_client.get("/api/search/last", headers=AUTH).json()
+    assert live["search_id"] == report["search_id"]

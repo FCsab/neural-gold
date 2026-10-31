@@ -12,6 +12,7 @@ import asyncio
 import json
 import math
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -274,11 +275,153 @@ def refresh_exchange_info(config: AppConfig, ctx) -> dict[str, Any]:
     return info
 
 
-def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
-    """Train a model in a child process, honouring a time budget and Stop."""
+def train_child(
+    train_config,
+    dataset_path: Path,
+    feature_names: list[str],
+    checkpoint_dir: Path,
+    ctx,
+    *,
+    prefix: str = "",
+    manage_progress: bool = True,
+) -> dict[str, Any]:
+    """Run one training job in a spawned child and return its result payload."""
+
     import multiprocessing
     import queue as queue_module
 
+    from .. import training as training_module
+
+    context = multiprocessing.get_context("spawn")
+    stop_event = context.Event()
+    progress_queue = context.Queue()
+    ctx.on_stop(stop_event.set)
+
+    process = context.Process(
+        target=training_module.train_process_entry,
+        args=(
+            {
+                "window": train_config.window,
+                "epochs": train_config.epochs,
+                "batch_size": train_config.batch_size,
+                "lr": train_config.lr,
+                "weight_decay": train_config.weight_decay,
+                "dropout": train_config.dropout,
+                "d_model": train_config.d_model,
+                "nhead": train_config.nhead,
+                "layers": train_config.layers,
+                "dim_feedforward": train_config.dim_feedforward,
+                "patience": train_config.patience,
+                "max_minutes": train_config.max_minutes,
+                "seed": train_config.seed,
+                "num_threads": train_config.num_threads,
+                "device": train_config.device,
+                "train_frac": train_config.train_frac,
+                "val_frac": train_config.val_frac,
+            },
+            str(dataset_path),
+            list(feature_names),
+            str(checkpoint_dir),
+            progress_queue,
+            stop_event,
+        ),
+        name="training-child",
+        daemon=True,
+    )
+    process.start()
+
+    result_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    stop_requested_at: float | None = None
+
+    while True:
+        try:
+            message = progress_queue.get(timeout=0.4)
+        except queue_module.Empty:
+            if not process.is_alive():
+                break
+            if ctx.should_stop() and not stop_event.is_set():
+                stop_event.set()
+            if stop_event.is_set() and stop_requested_at is None:
+                stop_requested_at = time.monotonic()
+            if stop_requested_at and time.monotonic() - stop_requested_at > 120:
+                ctx.log("training ignored the stop request for 120s; terminating")
+                process.terminate()
+            continue
+
+        kind = message.get("type")
+        if kind == "progress":
+            text = message.get("message") or "training"
+            if manage_progress:
+                total = max(1, int(message.get("epochs_total", 1)))
+                ctx.update(
+                    message=text,
+                    progress=min(0.99, int(message.get("epoch", 0)) / total),
+                )
+            elif prefix:
+                ctx.message(f"{prefix} · {text}")
+        elif kind == "result":
+            result_payload = message.get("result")
+        elif kind == "error":
+            error_payload = message
+
+    process.join(timeout=30)
+    if process.is_alive():  # pragma: no cover - only on a wedged child
+        process.terminate()
+        process.join(timeout=10)
+
+    if error_payload is not None:
+        trace = (error_payload.get("trace") or "").strip().splitlines()
+        raise RuntimeError(
+            error_payload.get("error", "training failed")
+            + ("\n" + "\n".join(trace[-6:]) if trace else "")
+        )
+    if result_payload is None:
+        raise RuntimeError("training process exited without returning a result")
+    return result_payload
+
+
+def open_price_lookup(config: AppConfig) -> dict[int, float]:
+    """open_time -> open price, for entry fills."""
+    store = store_from_config(config)
+    bars = store.load_bars()
+    return dict(
+        zip(
+            bars["open_time"].astype("int64").tolist(),
+            bars["open"].astype("float64").tolist(),
+        )
+    )
+
+
+def prepare_backtest_frame(frame: pd.DataFrame, rows, open_by_time: dict[int, float]) -> pd.DataFrame:
+    """Slice the dataset and attach a tradeable entry price per row."""
+    import numpy as np
+
+    sliced = frame.iloc[rows].reset_index(drop=True)
+    opens = np.array(
+        [open_by_time.get(int(t), float("nan")) for t in sliced["open_time"]],
+        dtype=np.float64,
+    )
+    next_open = np.full(len(opens), np.nan, dtype=np.float64)
+    if len(opens) > 1:
+        next_open[:-1] = opens[1:]
+    closes = sliced["close"].to_numpy(dtype=np.float64)
+    entry = np.where(np.isfinite(next_open), next_open, closes)
+
+    return pd.DataFrame(
+        {
+            "open_time": sliced["open_time"].to_numpy(dtype=np.int64),
+            "entry_price": entry,
+            "exit_time": sliced["exit_time"].to_numpy(dtype=np.int64),
+            "exit_price": sliced["exit_price"].to_numpy(dtype=np.float64),
+            "holding_bars": sliced["holding_bars"].to_numpy(dtype=np.int64),
+            "label": sliced["label"].to_numpy(dtype=np.int64),
+        }
+    )
+
+
+def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
+    """Train a model in a child process, honouring a time budget and Stop."""
     import pyarrow.parquet as pq
 
     from .. import training as training_module
@@ -341,81 +484,16 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         f"budget {budget_text}"
     )
 
-    context = multiprocessing.get_context("spawn")
-    stop_event = context.Event()
-    progress_queue = context.Queue()
-    ctx.on_stop(stop_event.set)
-
-    process = context.Process(
-        target=training_module.train_process_entry,
-        args=(
-            {
-                "window": train_config.window,
-                "epochs": train_config.epochs,
-                "batch_size": train_config.batch_size,
-                "lr": train_config.lr,
-                "weight_decay": train_config.weight_decay,
-                "dropout": train_config.dropout,
-                "d_model": train_config.d_model,
-                "nhead": train_config.nhead,
-                "layers": train_config.layers,
-                "dim_feedforward": train_config.dim_feedforward,
-                "patience": train_config.patience,
-                "max_minutes": train_config.max_minutes,
-                "seed": train_config.seed,
-                "num_threads": train_config.num_threads,
-                "device": train_config.device,
-                "train_frac": train_config.train_frac,
-                "val_frac": train_config.val_frac,
-            },
-            str(dataset_path),
+    try:
+        result_payload = train_child(
+            train_config,
+            dataset_path,
             feature_names,
-            str(checkpoint_dir),
-            progress_queue,
-            stop_event,
-        ),
-        name=f"training-{model_id}",
-        daemon=True,
-    )
-    process.start()
-
-    result_payload: dict[str, Any] | None = None
-    error_payload: dict[str, Any] | None = None
-    stop_requested_at: float | None = None
-
-    while True:
-        try:
-            message = progress_queue.get(timeout=0.4)
-        except queue_module.Empty:
-            if not process.is_alive():
-                break
-            if ctx.should_stop() and not stop_event.is_set():
-                stop_event.set()
-            if stop_event.is_set() and stop_requested_at is None:
-                stop_requested_at = time.monotonic()
-            if stop_requested_at and time.monotonic() - stop_requested_at > 120:
-                ctx.log("training ignored the stop request for 120s; terminating")
-                process.terminate()
-            continue
-
-        kind = message.get("type")
-        if kind == "progress":
-            total = max(1, int(message.get("epochs_total", 1)))
-            ctx.update(
-                message=message.get("message") or "training",
-                progress=min(0.99, int(message.get("epoch", 0)) / total),
-            )
-        elif kind == "result":
-            result_payload = message.get("result")
-        elif kind == "error":
-            error_payload = message
-
-    process.join(timeout=30)
-    if process.is_alive():  # pragma: no cover - only on a wedged child
-        process.terminate()
-        process.join(timeout=10)
-
-    if error_payload is not None:
+            checkpoint_dir,
+            ctx,
+            prefix=f"model {model_id}",
+        )
+    except Exception:
         registry.update_model(model_id, status="failed")
         registry.record_run(
             model_id=model_id,
@@ -424,15 +502,7 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
             config={"window": window, "epochs": train_config.epochs},
             stop_reason="error",
         )
-        trace = (error_payload.get("trace") or "").strip().splitlines()
-        raise RuntimeError(
-            error_payload.get("error", "training failed")
-            + ("\n" + "\n".join(trace[-6:]) if trace else "")
-        )
-
-    if result_payload is None:
-        registry.update_model(model_id, status="failed")
-        raise RuntimeError("training process exited without returning a result")
+        raise
 
     metrics = result_payload.get("metrics") or {}
     trained = result_payload.get("checkpoint_path") is not None
@@ -530,37 +600,7 @@ def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
 
     ctx.progress(0.25, f"scoring {len(rows):,} rows with {model['name']}")
     probabilities = training_module.predict_proba(checkpoint, frame, rows)
-    test = frame.iloc[rows].reset_index(drop=True)
-
-    # The dataset stores the signal bar's close, not the next bar's open. Pull
-    # the open prices from the bar store so entry happens at a tradeable price.
-    store = store_from_config(config)
-    bars = store.load_bars()
-    open_by_time = dict(
-        zip(
-            bars["open_time"].astype("int64").tolist(),
-            bars["open"].astype("float64").tolist(),
-        )
-    )
-    opens = np.array(
-        [open_by_time.get(int(t), float("nan")) for t in test["open_time"]], dtype=np.float64
-    )
-    next_open = np.full(len(opens), np.nan, dtype=np.float64)
-    if len(opens) > 1:
-        next_open[:-1] = opens[1:]
-    closes = test["close"].to_numpy(dtype=np.float64)
-    entry = np.where(np.isfinite(next_open), next_open, closes)
-
-    prepared = pd.DataFrame(
-        {
-            "open_time": test["open_time"].to_numpy(dtype=np.int64),
-            "entry_price": entry,
-            "exit_time": test["exit_time"].to_numpy(dtype=np.int64),
-            "exit_price": test["exit_price"].to_numpy(dtype=np.float64),
-            "holding_bars": test["holding_bars"].to_numpy(dtype=np.int64),
-            "label": test["label"].to_numpy(dtype=np.int64),
-        }
-    )
+    prepared = prepare_backtest_frame(frame, rows, open_price_lookup(config))
 
     backtest_config = BacktestConfig(
         initial_equity=float(params.get("initial_equity", 10_000.0)),
@@ -586,8 +626,8 @@ def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
     }
     payload["slice"] = {
         "rows": int(len(rows)),
-        "first_ms": int(test["open_time"].iloc[0]),
-        "last_ms": int(test["open_time"].iloc[-1]),
+        "first_ms": int(prepared["open_time"].iloc[0]),
+        "last_ms": int(prepared["open_time"].iloc[-1]),
     }
     reports.write_report(config, "backtest", payload)
 
@@ -597,3 +637,344 @@ def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         f"buy-and-hold {metrics['buy_hold_return'] * 100:+.2f}%"
     )
     return payload
+
+
+def _downsample(points: list[dict[str, float]], limit: int) -> list[dict[str, float]]:
+    if len(points) <= limit:
+        return points
+    step = max(1, len(points) // limit)
+    return points[::step] + [points[-1]]
+
+
+def run_search(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
+    """Sweep label settings, train each one, rank them on the validation slice."""
+    import numpy as np
+
+    from .. import training as training_module
+    from ..backtest import BacktestConfig, run_backtest as simulate, verdict
+    from ..dataset import build_dataset
+    from ..indicators import atr as atr_indicator
+    from ..registry import new_id, registry_from_config
+    from ..search import (
+        SearchConfig,
+        generate_candidates,
+        refine_candidates,
+        score,
+    )
+
+    search_config = SearchConfig(
+        total_minutes=float(params.get("total_minutes", 180.0)),
+        per_candidate_minutes=float(params.get("per_candidate_minutes", 4.0)),
+        max_candidates=int(params.get("max_candidates", 40)),
+        epochs=int(params.get("epochs", 400)),
+        batch_size=int(params.get("batch_size", 512)),
+        lr=float(params.get("lr", 3e-4)),
+        device=str(params.get("device", "auto")),
+        fee_bps=float(params.get("fee_bps", 10.0)),
+        slippage_bps=float(params.get("slippage_bps", 2.0)),
+        refine_top=int(params.get("refine_top", 2)),
+    )
+
+    store = store_from_config(config)
+    bars = store.load_bars()
+    if bars.empty:
+        raise RuntimeError("no bars stored; run a backfill first")
+
+    atr_series = atr_indicator(bars["high"], bars["low"], bars["close"], 14)
+    atr_bps = float((atr_series / bars["close"]).dropna().median() * 1e4)
+
+    candidates = generate_candidates(atr_bps, search_config)
+    if not candidates:
+        raise RuntimeError(
+            "no label setting survives the cost filter: the profit target must be at "
+            f"least {search_config.min_target_ratio:g}x the "
+            f"{search_config.round_trip_cost_bps:.0f} bps round trip"
+        )
+
+    registry = registry_from_config(config)
+    search_id = new_id("search")
+    open_by_time = open_price_lookup(config)
+    started = time.monotonic()
+    deadline = started + search_config.total_minutes * 60.0
+    started_at = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+    backtest_config = BacktestConfig(
+        fee_bps=search_config.fee_bps,
+        slippage_bps=search_config.slippage_bps,
+        initial_equity=float(params.get("initial_equity", 10_000.0)),
+    )
+    results: list[dict[str, Any]] = []
+    # Grows when the refinement pass adds candidates, so the UI never shows
+    # "5 / 2 candidates".
+    total_planned = len(candidates)
+
+    def publish(status: str = "running") -> dict[str, Any]:
+        ranked = sorted(
+            [row for row in results if row.get("status") == "ok"],
+            key=lambda row: row["score"],
+            reverse=True,
+        )
+        for index, row in enumerate(ranked, start=1):
+            row["rank"] = index
+        best = ranked[0] if ranked else None
+        payload = {
+            "search_id": search_id,
+            "status": status,
+            "started_at": started_at,
+            "finished_at": (
+                datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+                if status != "running"
+                else None
+            ),
+            "atr_bps": round(atr_bps, 2),
+            "round_trip_cost_bps": search_config.round_trip_cost_bps,
+            "elapsed_minutes": round((time.monotonic() - started) / 60.0, 1),
+            "candidates_total": total_planned,
+            "candidates_done": len(results),
+            "rows": [
+                {key: value for key, value in row.items() if key != "_curve"}
+                for row in results
+            ],
+            "leaderboard": [
+                {key: value for key, value in row.items() if key != "_curve"}
+                for row in ranked[:10]
+            ],
+            "best": (
+                {key: value for key, value in best.items() if key != "_curve"}
+                if best
+                else None
+            ),
+            "best_curve": _downsample(best.get("_curve", []), 400) if best else [],
+            "params": {
+                "total_minutes": search_config.total_minutes,
+                "per_candidate_minutes": search_config.per_candidate_minutes,
+                "max_candidates": search_config.max_candidates,
+                "fee_bps": search_config.fee_bps,
+                "slippage_bps": search_config.slippage_bps,
+                "device": search_config.device,
+            },
+        }
+        reports.write_report(config, "search", payload)
+        return payload
+
+    def run_candidate(candidate, index: int, total: int) -> dict[str, Any]:
+        label_config = replace(
+            config.labels,
+            k_up=candidate.k_up,
+            k_down=candidate.k_down,
+            max_holding_bars=candidate.holding,
+        )
+        prefix = f"c{index}/{total} · {candidate.key()}"
+        ctx.message(f"candidate {index}/{total} · {candidate.label()} · labelling")
+
+        try:
+            dataset = build_dataset(bars, config.features, label_config)
+        except Exception as exc:  # noqa: BLE001 - a bad label config must not kill the sweep
+            return {
+                "status": "failed",
+                "candidate": candidate.to_dict(),
+                "error": f"dataset: {exc}",
+                "score": float("-inf"),
+            }
+
+        dataset_path = config.data_root / "search" / "candidate.parquet"
+        dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        dataset.frame.to_parquet(
+            dataset_path, index=False, compression=config.data.compression
+        )
+
+        model_id = new_id("model")
+        model_name = f"search-{search_id[-6:]}-{candidate.key()}"
+        checkpoint_dir = config.data_root / "checkpoints" / model_id
+        registry.create_model(
+            model_id=model_id,
+            name=model_name,
+            interval=config.exchange.interval,
+            architecture="transformer_v1",
+            window=candidate.window,
+            label_config={
+                "k_up": candidate.k_up,
+                "k_down": candidate.k_down,
+                "max_holding_bars": candidate.holding,
+                "atr_period": config.labels.atr_period,
+                "ambiguity": config.labels.ambiguity,
+            },
+            feature_config={"feature_lag": config.features.feature_lag},
+            status="training",
+        )
+        run_started = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        train_config = training_module.TrainConfig(
+            window=candidate.window,
+            epochs=search_config.epochs,
+            batch_size=search_config.batch_size,
+            lr=search_config.lr,
+            patience=search_config.patience,
+            max_minutes=search_config.per_candidate_minutes,
+            device=search_config.device,
+            seed=search_config.seed,
+        )
+
+        try:
+            payload = train_child(
+                train_config,
+                dataset_path,
+                dataset.feature_columns,
+                checkpoint_dir,
+                ctx,
+                prefix=prefix,
+                manage_progress=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - report and continue the sweep
+            registry.update_model(model_id, status="failed")
+            registry.record_run(
+                model_id=model_id,
+                started_at=run_started,
+                status="failed",
+                config={"window": candidate.window},
+                stop_reason="error",
+            )
+            return {
+                "status": "failed",
+                "candidate": candidate.to_dict(),
+                "model_id": model_id,
+                "error": str(exc)[:300],
+                "score": float("-inf"),
+            }
+
+        if not payload.get("checkpoint_path"):
+            registry.update_model(model_id, status="draft")
+            return {
+                "status": "skipped",
+                "candidate": candidate.to_dict(),
+                "model_id": model_id,
+                "error": "no checkpoint: stopped before the first epoch",
+                "score": float("-inf"),
+            }
+
+        ctx.message(f"candidate {index}/{total} · {candidate.key()} · backtesting")
+        checkpoint = training_module.load_checkpoint(payload["checkpoint_path"])
+        frame = dataset.frame.reset_index(drop=True)
+        total_rows = len(frame)
+        first = candidate.window - 1
+        val_start = int(total_rows * train_config.train_frac)
+        val_end = int(total_rows * (train_config.train_frac + train_config.val_frac))
+        val_rows = np.arange(max(val_start, first), val_end)
+        test_rows = np.arange(max(val_end, first), total_rows)
+
+        validation = simulate(
+            prepare_backtest_frame(frame, val_rows, open_by_time),
+            training_module.predict_proba(checkpoint, frame, val_rows),
+            backtest_config,
+        )
+        test = simulate(
+            prepare_backtest_frame(frame, test_rows, open_by_time),
+            training_module.predict_proba(checkpoint, frame, test_rows),
+            backtest_config,
+        )
+
+        row = {
+            "status": "ok",
+            "candidate": candidate.to_dict(),
+            "model_id": model_id,
+            "model_name": model_name,
+            "score": score({"validation": {"metrics": validation.metrics}}, search_config.min_trades),
+            "train": {
+                "epochs": payload.get("epochs_done"),
+                "stop_reason": payload.get("stop_reason"),
+                "duration_s": payload.get("duration_s"),
+                "device": payload.get("device"),
+            },
+            "validation": {
+                "metrics": validation.metrics,
+                "verdict": verdict(validation.metrics),
+            },
+            "test": {"metrics": test.metrics, "verdict": verdict(test.metrics)},
+            "_curve": validation.equity_curve,
+        }
+
+        metrics = payload.get("metrics") or {}
+        status = (
+            "candidate"
+            if row["score"] > float("-inf") and metrics.get("beats_baseline")
+            else "draft"
+        )
+        registry.update_model(
+            model_id,
+            status=status,
+            checkpoint_path=payload["checkpoint_path"],
+            checkpoint_version=int(payload.get("checkpoint_version") or 1),
+            metrics=metrics,
+        )
+        registry.record_run(
+            model_id=model_id,
+            started_at=run_started,
+            status="ok",
+            config={
+                "window": candidate.window,
+                "k_up": candidate.k_up,
+                "k_down": candidate.k_down,
+                "holding": candidate.holding,
+                "max_minutes": search_config.per_candidate_minutes,
+            },
+            final_metrics=metrics,
+            per_class_metrics=metrics.get("per_class"),
+            confusion_matrix=metrics.get("confusion_matrix"),
+            epochs_done=payload.get("epochs_done"),
+            stop_reason=payload.get("stop_reason"),
+            duration_s=payload.get("duration_s"),
+            device=payload.get("device"),
+        )
+        return row
+
+    def run_batch(batch, total: int, offset: int = 0) -> bool:
+        for index, candidate in enumerate(batch, start=offset + 1):
+            if ctx.should_stop():
+                ctx.log("stop requested")
+                return False
+            if time.monotonic() > deadline:
+                ctx.log("time budget exhausted")
+                return False
+            results.append(run_candidate(candidate, index, total))
+            publish()
+            ctx.update(
+                progress=min(
+                    0.99, (time.monotonic() - started) / (search_config.total_minutes * 60.0)
+                )
+            )
+        return True
+
+    ctx.log(
+        f"{len(candidates)} candidates · ATR {atr_bps:.1f} bps · "
+        f"round trip {search_config.round_trip_cost_bps:.0f} bps · "
+        f"budget {search_config.total_minutes:g} min"
+    )
+    publish()
+
+    completed = run_batch(candidates, len(candidates))
+
+    if completed and search_config.refine_top > 0:
+        ranked = sorted(
+            [row for row in results if row.get("status") == "ok"],
+            key=lambda row: row["score"],
+            reverse=True,
+        )
+        extra = refine_candidates([{"candidate": row["candidate"]} for row in ranked], search_config)
+        remaining = deadline - time.monotonic()
+        # Only refine when there is real time left; on a short sweep this would
+        # otherwise double the run past the budget the user asked for.
+        if extra and remaining > 2 * search_config.per_candidate_minutes * 60:
+            total_planned += len(extra)
+            ctx.log(f"refining {len(extra)} candidates with different windows")
+            run_batch(extra, total_planned, offset=len(candidates))
+        elif extra:
+            ctx.log("skipping the window refinement: not enough time left")
+
+    final = publish("done" if completed and not ctx.should_stop() else "stopped")
+    best = final.get("best")
+    if best:
+        ctx.log(
+            f"best: {best['candidate']['key']} · val {best['validation']['metrics']['total_return'] * 100:+.2f}% "
+            f"· test {best['test']['metrics']['total_return'] * 100:+.2f}%"
+        )
+    else:
+        ctx.log("no candidate produced a usable model")
+    return final

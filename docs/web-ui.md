@@ -30,7 +30,7 @@ device. For anything beyond a trusted LAN, point `server.cert_path` and
 The work is a pipeline, so the UI is numbered like one:
 
 ```
-1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training → 5 Backtest
+1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training → 5 Backtest → 6 Auto-search
 ```
 
 Each tab shows a status dot (grey = not done, green = done, red = failed), and
@@ -82,6 +82,13 @@ slippage on both sides, and draws the equity curve against simply holding
 PAXG. Leads with a verdict; flags the case where the profit target is smaller
 than the round-trip cost, because then nothing can be profitable.
 
+**Auto-search** — sweeps label settings for a budget of hours, training and
+backtesting each candidate. The leaderboard fills in while the job runs (the
+report is rewritten after every candidate and polled every few seconds), and
+the best candidate's validation equity is drawn underneath. Selecting on
+validation, reporting on test, and pruning untradeable settings are described
+in `docs/search.md`.
+
 **Exchange rules** — cached `exchangeInfo` filters (tick size, step size,
 notional limits). Never hardcoded anywhere in the codebase.
 
@@ -108,6 +115,8 @@ does not, and contains no data.
 | GET | `/api/train/status` | torch availability and dataset readiness |
 | POST | `/api/backtest/run` | `{model_id?, fee_bps, slippage_bps, ...}` → backtest job |
 | GET | `/api/backtest/last` | the persisted backtest report |
+| POST | `/api/search/start` | `{total_minutes, per_candidate_minutes, ...}` → sweep job |
+| GET | `/api/search/last` | live leaderboard, rewritten after each candidate |
 | GET | `/api/models` | registry listing |
 | GET | `/api/models/{id}` | one model plus its runs |
 | GET | `/api/jobs` | job summaries (no logs) |
@@ -162,6 +171,7 @@ gold_neural/server/
 gold_neural/model.py         window transformer + GPU probe
 gold_neural/training.py      training loop, time budget, cooperative stop
 gold_neural/backtest.py      trade simulation, fees, equity curve
+gold_neural/search.py        candidate grid, cost pruning, validation scoring
 gold_neural/registry.py      SQLite models + training_runs
 web/
   index.html                 single page, six panels
@@ -173,7 +183,7 @@ scripts/smoke.py             post-deploy check of the running server
 
 ## Verified
 
-- `pytest`: 97 tests, no network required.
+- `pytest`: 110 tests, no network required.
 - `scripts/smoke.py` against a live server: 12/12 checks, including a
   leakage run through the job API.
 - Headless Chromium: page loads, chart renders 288 candles, all six tabs
@@ -186,3 +196,6 @@ scripts/smoke.py             post-deploy check of the running server
 - Backtest tab: verdict, stats, equity chart and 50 trade rows render from a
   real run; the cost diagnostic fires when the target is under the round-trip
   cost.
+- Auto-search tab: a live 2-candidate sweep added its first leaderboard row
+  while the job was still running, ended at `done` with 2/2 candidates, and
+  never showed the previous sweep's rows during the new one.
