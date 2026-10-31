@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data and state (regenerated, never committed). Root-anchored: a bare
+# 'data/' would also swallow the gold_neural/data package.
+/data/
+*.parquet
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.pt
+*.ckpt
+logs/
+checkpoints/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+!.gitignore
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Tooling scratch
+.deepseek/

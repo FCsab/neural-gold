@@ -1,0 +1,40 @@
+# Copy to config.yaml and edit. Every value can be overridden by an
+# environment variable of the form GOLDNEURAL_<SECTION>_<KEY> (uppercased),
+# e.g. GOLDNEURAL_EXCHANGE_SYMBOL=PAXGUSDT.
+
+exchange:
+  base_url: "https://api.binance.com"
+  symbol: "PAXGUSDT"
+  interval: "5m"
+  request_timeout_s: 20.0
+  max_retries: 5
+  min_request_spacing_s: 0.15
+
+data:
+  # Root for Parquet bars and the SQLite range index.
+  root: "data"
+  # Bars are written one Parquet file per (year, month) partition.
+  compression: "zstd"
+
+features:
+  # 1 = features at bar t use data up to bar t-1 (strictly before the bar
+  # whose outcome is being predicted). 0 = allow bar t's own OHLCV.
+  feature_lag: 1
+  return_lookbacks: [1, 3, 6, 12, 24, 48]
+  ewma_vol_spans: [12, 48]
+  realized_vol_windows: [12, 48]
+  rsi_period: 14
+  macd: [12, 26, 9]
+  atr_period: 14
+  volume_z_window: 48
+  range_window: 48
+  ema_distances: [20, 50]
+
+labels:
+  k_up: 2.0
+  k_down: 1.5
+  max_holding_bars: 12
+  atr_period: 14
+  # When both barriers are touched inside the same bar we cannot know the
+  # intrabar order. "stop_priority" books it as a loss (conservative).
+  ambiguity: "stop_priority"
