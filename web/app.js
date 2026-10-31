@@ -312,9 +312,35 @@ const STOP_REASONS = {
   completed: "finished all epochs",
   time_budget: "stopped at the time limit",
   stopped: "stopped by you",
-  early_stopping: "stopped early, no improvement",
+  early_stopping: "stopped early — validation stopped improving",
 };
 const stopReasonLabel = (reason) => STOP_REASONS[reason] || reason;
+
+/** One sentence explaining why a run ended, in terms of the settings. */
+function stopNote(result) {
+  const metrics = result.metrics || {};
+  const patience = (result.config && result.config.patience) || null;
+  const best = fmtInt(metrics.best_epoch);
+
+  if (result.stop_reason === "early_stopping") {
+    return (
+      `It stopped at epoch ${fmtInt(result.epochs_done)} because validation loss had not improved for ` +
+      `${patience ? fmtInt(patience) + " epochs" : "several epochs"}. ` +
+      `Best weights: epoch ${best}. ` +
+      `That is the patience setting doing its job, not an error.`
+    );
+  }
+  if (result.stop_reason === "time_budget") {
+    return (
+      `It stopped when the time limit ran out. Best weights: epoch ${best}. ` +
+      `Raise the limit, or clear it to run until you press Stop.`
+    );
+  }
+  if (result.stop_reason === "stopped") {
+    return `You pressed Stop. The best weights so far (epoch ${best}) were kept.`;
+  }
+  return "";
+}
 
 function renderJobStrip() {
   const strip = $("jobstrip");
@@ -1120,8 +1146,10 @@ function renderTrainResult(result, options = {}) {
     .join("");
 
   const verdict = verdictFor(metrics);
+  const note = stopNote(result);
   $("train-metrics").innerHTML = `
     ${verdict ? `<div class="verdict ${verdict.tone}">${verdict.html}</div>` : ""}
+    ${note ? `<p class="hint" style="margin:-4px 0 16px">${escapeHtml(note)}</p>` : ""}
     <div class="result-grid">
       <div>
         <h3 class="subhead">Summary</h3>
