@@ -101,9 +101,9 @@ class TrainParams(BaseModel):
     # than no cap, and patience already bounds a healthy run.
     minutes: float | None = Field(default=None, ge=0, le=1440)
     epochs: int = Field(default=100, ge=1, le=100000)
-    window: int = Field(default=128, ge=8, le=512)
+    window: int = Field(default=64, ge=8, le=512)
     batch_size: int = Field(default=256, ge=16, le=4096)
-    lr: float = Field(default=1e-4, gt=0, le=1)
+    lr: float = Field(default=3e-4, gt=0, le=1)
     patience: int = Field(default=10, ge=1, le=1000)
     seed: int = Field(default=7, ge=0, le=2**31 - 1)
     device: Literal["auto", "cpu"] = "auto"

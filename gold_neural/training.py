@@ -35,13 +35,14 @@ CLASSES = (-1, 0, 1)
 
 @dataclass(frozen=True)
 class TrainConfig:
-    # Defaults tuned on this data: train loss fell smoothly at 3e-4 while
-    # validation bounced, so the step size was too large; and a 64-bar window
-    # (~5 h at 5m) gave the model too little context to separate the classes.
-    window: int = 128
+    # Measured on this data (see docs/training.md): window 128 with lr 1e-4
+    # reached the same validation floor as window 64 with lr 3e-4 (1.0616 vs
+    # 1.0619) in 2.3x the wall clock, and scored no better on balanced
+    # accuracy. Cheaper configuration wins until something moves the floor.
+    window: int = 64
     epochs: int = 100
     batch_size: int = 256
-    lr: float = 1e-4
+    lr: float = 3e-4
     weight_decay: float = 1e-4
     dropout: float = 0.1
     d_model: int = 64

@@ -124,12 +124,30 @@ recall   stop 41.2%  timeout 14.6%  target 51.5%
 status               draft
 ```
 
-Read together: the model finds *something* (51.5% of real targets versus a
-32% base rate) but loses the timeout class almost entirely, and the balanced
-score lands 2 points above a constant guess. Training loss falls monotonically
-while validation loss bottoms out at epoch 3 and climbs — a small model
-starting to memorise, not an undertrained one. More epochs do not fix that;
-a lower learning rate, a wider window, or more history do.
+That run was then repeated with the two changes the curve seemed to call for —
+a smaller learning rate (1e-4) and twice the context (window 128), patience 5:
+
+```
+epochs               11 in 757 s, best epoch 6
+balanced accuracy    0.3528
+constant-guess       0.3333   (+1.9 points)
+plain accuracy       0.3902
+validation floor     1.0616   (previous run: 1.0619)
+status               draft
+```
+
+**Neither change helped.** The validation floor moved by 0.0003 while the
+wall clock more than doubled, and balanced accuracy landed half a point lower
+— noise in either direction. When two very different step sizes and window
+lengths converge to the same loss, those are not the binding constraint; the
+feature set and the amount of history are. The defaults stay at window 64 /
+lr 3e-4, which reaches the same place in half the time, with patience 10 to
+give a slower start room to recover.
+
+What the model does find: 51.5% of real targets against a 32% base rate, while
+losing the timeout class almost entirely (14.6% recall). Training loss falls
+monotonically as validation flattens and turns up — a small model beginning to
+memorise, not an undertrained one.
 
 Stopping an unbounded run: start → 1 epoch in 20 s → **Stop** → checkpoint
 written, `stop_reason=stopped`, job status `stopped`.

@@ -1248,9 +1248,9 @@ function trainParams() {
   return {
     minutes: minutes === null ? null : minutes,
     epochs: Number($("train-epochs").value) || 100,
-    window: Number($("train-window").value) || 128,
+    window: Number($("train-window").value) || 64,
     batch_size: Number($("train-batch").value) || 256,
-    lr: Number($("train-lr").value) || 0.0001,
+    lr: Number($("train-lr").value) || 0.0003,
     patience: Number($("train-patience").value) || 10,
     device: $("train-device").value,
   };

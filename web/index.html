@@ -255,16 +255,16 @@
           <span class="hint">One pass over the training data. Whichever limit hits first wins.</span>
         </label>
         <label>Window (bars)
-          <input id="train-window" type="number" step="1" min="8" max="512" value="128" />
-          <span class="hint">How many past bars the model sees per prediction. 128 × 5m ≈ 10 hours.</span>
+          <input id="train-window" type="number" step="1" min="8" max="512" value="64" />
+          <span class="hint">How many past bars the model sees per prediction. 64 × 5m ≈ 5 hours; 128 was tested and scored the same.</span>
         </label>
         <label>Batch size
           <input id="train-batch" type="number" step="1" min="16" max="4096" value="256" />
           <span class="hint">Examples per gradient step. Bigger is faster but needs more memory.</span>
         </label>
         <label>Learning rate
-          <input id="train-lr" type="number" step="0.00001" min="0.000001" max="1" value="0.0001" />
-          <span class="hint">How far each step moves. 0.0001 is conservative: slower, but it does not bounce.</span>
+          <input id="train-lr" type="number" step="0.0001" min="0.000001" max="1" value="0.0003" />
+          <span class="hint">How far each step moves. 0.0003 fits faster; 0.0001 was tested and reached the same place slower.</span>
         </label>
         <label>Patience
           <input id="train-patience" type="number" step="1" min="1" max="1000" value="10" />
