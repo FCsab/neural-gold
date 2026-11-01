@@ -48,6 +48,30 @@ entry at the next bar's open).
 At roughly 11 folds per minute each setting takes under two minutes, so one
 full pass is about 13 hours of work.
 
+## Check on it
+
+```bash
+./scripts/status.sh
+```
+
+One screen: whether the supervisor and runner are alive, elapsed time, folds
+per minute, the setting in progress, and the best settings so far ranked by
+median 3-month return. It only reads files, so running it never disturbs the
+sweep.
+
+Sample:
+
+```
+state      RUNNING  (supervisor 1224520, runner 1224523)
+elapsed      3.7 h  ·  9.4 folds/min  ·  interval 4h
+progress   2,180 folds on disk  ·  31 settings tracked
+current    u3.0d2.0h48w64s7 fold 7/19
+
+best settings so far, by median 3-month return
+  setting                folds   median    worst  >=+5%  beats hold  compounded
+  u3.0d2.0h48w64s7          19   +2.10%   -6.40%    38%         68%     +12.40%
+```
+
 ## Reading the output
 
 - `data/overnight/status.json` — live heartbeat: folds done, rate, current
