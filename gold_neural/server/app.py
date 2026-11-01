@@ -67,6 +67,27 @@ class LeakageParams(DatasetParams):
     samples: int = Field(default=10, ge=1, le=50)
 
 
+class WalkforwardParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    interval: str = Field(default="4h", pattern=r"^[0-9]+[mhd]$")
+    k_up: list[float] = Field(default=[3.0, 3.5, 4.0], min_length=1, max_length=20)
+    k_down: list[float] = Field(default=[2.5, 3.0], min_length=1, max_length=20)
+    holding: list[int] = Field(default=[192, 288], min_length=1, max_length=20)
+    window: list[int] = Field(default=[32, 64], min_length=1, max_length=20)
+    seeds: list[int] = Field(default=[7, 8, 9], min_length=1, max_length=20)
+    test_days: int = Field(default=90, ge=1, le=365)
+    val_days: int = Field(default=90, ge=1, le=365)
+    min_train_days: int = Field(default=365, ge=1, le=2000)
+    epochs: int = Field(default=15, ge=1, le=200)
+    batch_size: int = Field(default=256, ge=16, le=4096)
+    lr: float = Field(default=3e-4, gt=0, le=1)
+    minutes_per_fold: float = Field(default=3.0, gt=0, le=60)
+    fee_bps: float = Field(default=10.0, ge=0, le=100)
+    slippage_bps: float = Field(default=2.0, ge=0, le=100)
+    device: Literal["auto", "cpu"] = "auto"
+
+
 class SearchParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -143,6 +164,16 @@ def training_availability() -> dict[str, Any]:
         torch_version = "unknown"
 
     return {"available": True, "torch": torch_version, "gpu_reported": None}
+
+
+def _walkforward_report(config: AppConfig) -> dict[str, Any] | None:
+    path = config.data_root / "walkforward" / "status.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
 
 
 def _parse_iso_ms(text: str | None) -> int | None:
@@ -241,6 +272,7 @@ def create_app(
             "leakage": reports.read_report(config, "leakage"),
             "backtest": reports.read_report(config, "backtest"),
             "search": reports.read_report(config, "search"),
+            "walkforward": _walkforward_report(config),
             "verify": reports.read_report(config, "verify"),
             "exchange": reports.read_report(config, "exchange"),
         }
@@ -402,6 +434,27 @@ def create_app(
         if report is None:
             raise HTTPException(status_code=404, detail="no backtest has been run")
         return report
+
+    # -- walk-forward ------------------------------------------------------
+    @app.post("/api/walkforward/start")
+    def post_walkforward(
+        params: WalkforwardParams, _: None = Depends(auth)
+    ) -> dict[str, Any]:
+        payload = params.model_dump()
+        run = manager.submit(
+            "walkforward", payload, lambda ctx: tasks.run_walkforward(config, payload, ctx)
+        )
+        return {"job_id": run.id}
+
+    @app.get("/api/walkforward/last")
+    def walkforward_last(_: None = Depends(auth)) -> dict[str, Any]:
+        path = config.data_root / "walkforward" / "status.json"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="no walk-forward run yet")
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=409, detail="report is being written") from None
 
     # -- automated search -------------------------------------------------
     @app.post("/api/search/start")

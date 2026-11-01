@@ -959,3 +959,91 @@ def run_search(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]
     else:
         ctx.log("no candidate produced a usable model")
     return final
+
+
+def run_walkforward(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
+    """Run the walk-forward sweep as a web job.
+
+    Overrides the interval locally rather than requiring a restart: the 4h
+    bars live beside the 5m ones, so the browser can ask for either.
+    """
+    from ..backtest import BacktestConfig
+    from ..walkforward import SweepConfig, run_sweep
+
+    interval = str(params.get("interval") or config.exchange.interval)
+    local = replace(config, exchange=replace(config.exchange, interval=interval))
+
+    store = store_from_config(local)
+    if store.coverage().rows < 2000:
+        ctx.log(f"no {interval} bars stored; downloading 6 years")
+        stats = asyncio.run(backfill(local, years=float(params.get("years", 6.2))))
+        ctx.log(f"backfill: {stats.format()}")
+
+    bars = store.load_bars()
+    if bars.empty:
+        raise RuntimeError(f"no {interval} bars available")
+
+    bars_per_day = 86_400_000 // interval_to_ms(interval)
+    specs = [
+        {
+            "k_up": float(k_up),
+            "k_down": float(k_down),
+            "holding": int(holding),
+            "window": int(window),
+            "seed": int(seed),
+        }
+        for seed in params["seeds"]
+        for k_up in params["k_up"]
+        for k_down in params["k_down"]
+        for holding in params["holding"]
+        for window in params["window"]
+    ]
+    if not specs:
+        raise RuntimeError("the sweep has no configurations")
+
+    ctx.log(
+        f"{len(specs)} settings · {interval} · test {params['test_days']}d "
+        f"· seeds {params['seeds']}"
+    )
+
+    def on_status(status: dict[str, Any]) -> None:
+        total = max(1, status.get("specs_total") or 1)
+        done = status.get("specs_done") or 0
+        ctx.update(
+            message=status.get("current") or "running",
+            progress=min(0.99, done / total),
+        )
+
+    out = config.data_root / "walkforward"
+    final = run_sweep(
+        config=local,
+        bars=bars,
+        specs=specs,
+        sweep=SweepConfig(
+            test_bars=bars_per_day * int(params["test_days"]),
+            val_bars=bars_per_day * int(params["val_days"]),
+            min_train_bars=bars_per_day * int(params["min_train_days"]),
+            epochs=int(params["epochs"]),
+            batch_size=int(params["batch_size"]),
+            lr=float(params["lr"]),
+            minutes_per_fold=float(params["minutes_per_fold"]),
+            device=str(params["device"]),
+        ),
+        backtest_config=BacktestConfig(
+            fee_bps=float(params["fee_bps"]),
+            slippage_bps=float(params["slippage_bps"]),
+        ),
+        out_dir=out,
+        on_status=on_status,
+        should_stop=ctx.should_stop,
+        log=ctx.log,
+    )
+
+    best = (final.get("leaderboard") or [None])[0]
+    if best:
+        ctx.log(
+            f"best {best['spec']}: median {best['median_return'] * 100:+.2f}% "
+            f"· worst {best['worst_return'] * 100:+.2f}% "
+            f"· beats hold {best['share_beating_hold'] * 100:.0f}%"
+        )
+    return final

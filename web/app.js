@@ -21,9 +21,7 @@ const state = {
   btChart: null,
   btSeries: null,
   btHoldSeries: null,
-  search: null,
-  searchChart: null,
-  searchSeries: null,
+  walkforward: null,
   rangeBars: 288,
   ws: null,
   wsRetry: null,
@@ -170,8 +168,7 @@ function switchPanel(name) {
     renderBacktestChart();
   }
   if (name === "search") {
-    ensureSearchChart();
-    renderSearch();
+    renderWalkforward();
   }
 }
 
@@ -194,17 +191,18 @@ async function boot() {
     if (job && (job.status === "running" || job.status === "queued")) updateTrainLog(job.id);
   }, 1500);
 
-  // The sweep writes its report after every candidate; poll it so the
+  // The sweep rewrites its status file after every fold; poll it so the
   // leaderboard fills in while the job is still running.
   setInterval(() => {
     const running = state.jobs.some(
-      (job) => job.kind === "search" && (job.status === "running" || job.status === "queued")
+      (job) =>
+        job.kind === "walkforward" && (job.status === "running" || job.status === "queued")
     );
     if (!running) return;
-    api("/api/search/last")
+    api("/api/walkforward/last")
       .then((report) => {
-        state.search = report;
-        renderSearch();
+        state.walkforward = report;
+        renderWalkforward();
       })
       .catch(() => {});
   }, 3000);
@@ -239,7 +237,7 @@ async function refreshAll() {
     state.status = status;
     state.info = info;
     state.models = models.models || [];
-    if (info.search) state.search = info.search;
+    if (info.walkforward) state.walkforward = info.walkforward;
     applyJobs(jobs.jobs || []);
     renderStatus();
     renderInfo();
@@ -249,7 +247,7 @@ async function refreshAll() {
     renderTraining();
     renderTrainingPanel();
     renderBacktest();
-    renderSearch();
+    renderWalkforward();
     renderPipeline();
     renderIntro();
   } finally {
@@ -549,8 +547,8 @@ function computeStage() {
     models,
     hasModel: models.length > 0,
     hasBacktest: Boolean(info.backtest),
-    search: info.search || null,
-    hasSearch: Boolean(info.search),
+    search: info.walkforward || null,
+    hasSearch: Boolean(info.walkforward),
   };
 }
 
@@ -601,21 +599,21 @@ function nextStepFor(stage) {
   if (!stage.hasSearch) {
     return {
       panel: "search",
-      text: "Let the machine try dozens of label settings while you are away — it skips the ones that cannot pay for their fees.",
+      text: "One model is one window. Test settings across every 90-day block of the last six years instead.",
       action: "Take me there",
     };
   }
   if (stage.search && stage.search.status === "running") {
     return {
       panel: "search",
-      text: "A sweep is running. Results appear on the leaderboard as each candidate finishes.",
+      text: "The sweep is running. A setting appears on the leaderboard once all of its folds finish.",
       action: "Watch it",
     };
   }
   return {
     panel: "search",
-    text: "Everything is set up. Review the best candidate, or start another sweep with a different budget.",
-    action: "Open auto-search",
+    text: "Everything is set up. Compare the leaderboard, or test another region.",
+    action: "Open walk-forward",
   };
 }
 
@@ -1431,167 +1429,110 @@ function renderBacktest() {
   renderBacktestChart();
 }
 
-/* ---------------------------------------------------------------- search */
-function searchParams() {
+/* ---------------------------------------------------------- walk-forward */
+function numberList(id, cast = Number) {
+  return $(id)
+    .value.split(",")
+    .map((part) => cast(part.trim()))
+    .filter((value) => Number.isFinite(value));
+}
+
+function wfParams() {
   return {
-    total_minutes: (Number($("search-hours").value) || 3) * 60,
-    per_candidate_minutes: Number($("search-per").value) || 4,
-    max_candidates: Number($("search-max").value) || 40,
-    fee_bps: numberOr($("search-fees").value) ?? 10,
-    slippage_bps: numberOr($("search-slip").value) ?? 2,
-    device: $("search-device").value,
+    interval: $("wf-interval").value,
+    k_up: numberList("wf-k-up"),
+    k_down: numberList("wf-k-down"),
+    holding: numberList("wf-holding", (v) => parseInt(v, 10)),
+    window: numberList("wf-window", (v) => parseInt(v, 10)),
+    seeds: numberList("wf-seeds", (v) => parseInt(v, 10)),
+    test_days: Number($("wf-test-days").value) || 90,
+    val_days: Number($("wf-val-days").value) || 90,
+    epochs: Number($("wf-epochs").value) || 15,
   };
 }
 
-function ensureSearchChart() {
-  if (state.searchChart || typeof LightweightCharts === "undefined") return;
-  const container = $("search-chart");
-  state.searchChart = LightweightCharts.createChart(container, {
-    width: container.clientWidth,
-    height: container.clientHeight || 320,
-    layout: { background: { color: "#11161f" }, textColor: "#7d8ca1", fontSize: 11 },
-    grid: { vertLines: { color: "#161d29" }, horzLines: { color: "#161d29" } },
-    rightPriceScale: { borderColor: "#1d2634" },
-    timeScale: { borderColor: "#1d2634", timeVisible: true },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-  });
-  state.searchSeries = state.searchChart.addLineSeries({
-    color: "#d9b25f",
-    lineWidth: 2,
-    priceFormat: { type: "price", precision: 0, minMove: 1 },
-  });
-  new ResizeObserver(() => {
-    if (!state.searchChart) return;
-    state.searchChart.applyOptions({
-      width: container.clientWidth,
-      height: container.clientHeight,
-    });
-  }).observe(container);
-}
-
-function renderSearchChart(report) {
-  if (!state.searchSeries || !report) return;
-  const seen = new Set();
-  const points = [];
-  for (const point of report.best_curve || []) {
-    const time = Math.floor(point.time);
-    if (seen.has(time)) continue;
-    seen.add(time);
-    points.push({ time, value: point.equity });
-  }
-  points.sort((a, b) => a.time - b.time);
-  state.searchSeries.setData(points);
-  state.searchChart.timeScale().fitContent();
-}
-
-function renderSearch() {
-  const jobRunning = state.jobs.some(
-    (job) => job.kind === "search" && (job.status === "running" || job.status === "queued")
+function currentWalkforwardJob() {
+  const jobs = state.jobs.filter((job) => job.kind === "walkforward");
+  if (!jobs.length) return null;
+  return (
+    jobs.find((job) => job.status === "running" || job.status === "queued") || jobs[0]
   );
-  // While a new sweep is starting, do not show the previous run's leaderboard:
-  // it looks like results for the run that is just beginning.
-  const report = state.search || (!jobRunning ? state.info && state.info.search : null);
-  const badge = $("search-state");
-  const table = $("search-table");
+}
 
+const shareText = (value, digits = 0) =>
+  value === null || value === undefined ? "–" : (Number(value) * 100).toFixed(digits) + "%";
+
+function renderWalkforward() {
+  const report = state.walkforward;
+  const job = currentWalkforwardJob();
+  const running = Boolean(
+    job && (job.status === "running" || job.status === "queued")
+  );
+
+  $("start-walkforward").disabled = running;
+  $("stop-walkforward").disabled = !running;
+
+  const badge = $("wf-state");
+  if (job) {
+    badge.textContent = job.status;
+    badge.className =
+      "badge " +
+      (running ? "amber" : job.status === "ok" ? "ok" : job.status === "failed" ? "bad" : "");
+  } else {
+    badge.textContent = report ? report.status : "idle";
+    badge.className = "badge" + (report && report.status === "done" ? " ok" : "");
+  }
+
+  const stats = $("wf-stats");
   if (!report) {
-    badge.textContent = jobRunning ? "starting" : "never run";
-    badge.className = "badge" + (jobRunning ? " amber" : "");
-    $("search-stats").innerHTML = jobRunning
-      ? '<dt>—</dt><dd>Starting the sweep…</dd>'
-      : '<dt>—</dt><dd>No search yet. Set a budget and press “Start the search”.</dd>';
-    $("search-best").textContent = "";
-    $("search-note").textContent = "";
-    $("search-curve-meta").textContent = "";
-    table.innerHTML = "";
-    $("stop-search").disabled = true;
+    stats.innerHTML =
+      '<dt>—</dt><dd>No sweep yet. Pick a region above and press Start.</dd>';
+    $("wf-table").innerHTML = "";
     return;
   }
 
-  // A sweep writes "running" to disk as it goes. If the server restarts, the
-  // report keeps saying "running" forever because nothing is left to rewrite
-  // it — say "interrupted" rather than pretending a dead sweep is alive.
-  const stale = report.status === "running" && !jobRunning;
-  const running = (report.status === "running" && !stale) || jobRunning;
-  badge.textContent = stale ? "interrupted" : running ? "running" : report.status;
-  badge.className =
-    "badge " +
-    (report.status === "done" && !running ? "ok" : stale ? "bad" : running ? "amber" : "");
-
-  const rows = [
+  stats.innerHTML = [
+    ["status", running ? "running" : report.status],
     [
-      "candidates finished",
-      `${fmtInt(report.candidates_done)} / ${fmtInt(report.candidates_total)}`,
+      "settings",
+      `${fmtInt(report.specs_done)}${report.specs_total ? " / " + fmtInt(report.specs_total) : ""}`,
     ],
+    ["folds scored", fmtInt(report.folds_total)],
     ["elapsed", `${fmtNum(report.elapsed_minutes, 1)} min`],
-    ["mean ATR", `${fmtNum(report.atr_bps, 1)} bps`],
-    ["round-trip cost", `${fmtInt(report.round_trip_cost_bps)} bps`],
-    ["best so far", report.best ? report.best.candidate.key : "–"],
-    [
-      "best validation",
-      report.best ? fmtPct(report.best.validation.metrics.total_return, 2) : "–",
-    ],
-    ["best test", report.best ? fmtPct(report.best.test.metrics.total_return, 2) : "–"],
-  ];
-  $("search-stats").innerHTML = rows
+    ["now", running && job ? job.message : report.current || "—"],
+  ]
     .map(([key, value]) => `<dt>${key}</dt><dd>${escapeHtml(String(value))}</dd>`)
     .join("");
 
-  $("search-note").textContent = stale
-    ? "The sweep is no longer running — the server restarted while it was going. " +
-      "The candidates below are complete; start a new sweep to continue."
-    : `Candidates must aim at least ${fmtNum(report.round_trip_cost_bps * 2.5, 0)} bps ` +
-      `(2.5x the ${fmtNum(report.round_trip_cost_bps, 0)} bps round trip) or they are skipped.`;
-
-  $("search-best").textContent = report.best
-    ? report.best.test.verdict
-      ? report.best.test.verdict.text
-      : ""
-    : "";
-
-  const ranked = report.leaderboard || [];
-  if (!ranked.length) {
+  const rows = (report.leaderboard || []).slice(0, 20);
+  const table = $("wf-table");
+  if (!rows.length) {
     table.innerHTML =
-      '<tbody><tr><td class="muted">' +
-      (running ? "first candidate is training…" : "no candidate produced a usable model") +
-      "</td></tr></tbody>";
-  } else {
-    const body = ranked
-      .map((row) => {
-        const candidate = row.candidate;
-        const validation = row.validation.metrics;
-        const test = row.test.metrics;
-        const cls = (value) => (value >= 0 ? "pos" : "neg");
-        const scoreCell =
-          row.score === null || row.score === undefined
-            ? '<td class="num muted" title="fewer than 20 trades, so it is not ranked">—</td>'
-            : `<td class="num ${cls(row.score)}" title="validation return minus a quarter of its max drawdown">${(
-                row.score * 100
-              ).toFixed(1)}%</td>`;
-        return (
-          `<tr><td class="num">${fmtInt(row.rank)}</td>` + scoreCell +
-          `<td class="num">${candidate.k_up}</td><td class="num">${candidate.k_down}</td>` +
-          `<td class="num">${fmtInt(candidate.holding)}</td><td class="num">${fmtInt(candidate.window)}</td>` +
-          `<td class="num ${cls(validation.total_return)}">${fmtPct(validation.total_return, 2)}</td>` +
-          `<td class="num">${fmtInt(validation.trades)}</td>` +
-          `<td class="num ${cls(test.total_return)}">${fmtPct(test.total_return, 2)}</td></tr>`
-        );
-      })
-      .join("");
-    table.innerHTML =
-      '<thead><tr><th class="num">#</th>' +
-      '<th class="num" title="validation return minus a quarter of its max drawdown — the ranking key">score</th>' +
-      '<th class="num">target x</th><th class="num">stop x</th>' +
-      '<th class="num">hold</th><th class="num">window</th><th class="num">validation</th>' +
-      '<th class="num">trades</th><th class="num">test</th></tr></thead>' +
-      `<tbody>${body}</tbody>`;
+      '<tbody><tr><td class="muted">No setting has finished all of its folds yet — a setting needs every fold before it is ranked.</td></tr></tbody>';
+    return;
   }
 
-  $("search-curve-meta").textContent = report.best
-    ? `${report.best.model_name || report.best.candidate.key}`
-    : "";
-  ensureSearchChart();
-  renderSearchChart(report);
+  table.innerHTML =
+    '<thead><tr><th>setting</th><th class="num">folds</th>' +
+    '<th class="num">median quarter</th><th class="num">worst</th>' +
+    '<th class="num">≥ +5%</th><th class="num">beats hold</th>' +
+    '<th class="num">compounded</th></tr></thead><tbody>' +
+    rows
+      .map((row) => {
+        const tone = (value) => (value >= 0 ? "pos" : "neg");
+        return (
+          `<tr><td>${escapeHtml(row.spec)}</td>` +
+          `<td class="num">${fmtInt(row.folds)}</td>` +
+          `<td class="num ${tone(row.median_return)}">${shareText(row.median_return, 2)}</td>` +
+          `<td class="num neg">${shareText(row.worst_return, 2)}</td>` +
+          `<td class="num">${shareText(row.share_over_5pct, 0)}</td>` +
+          `<td class="num">${shareText(row.share_beating_hold, 0)}</td>` +
+          `<td class="num ${tone(row.compounded)}">${shareText(row.compounded, 1)}</td>` +
+          "</tr>"
+        );
+      })
+      .join("") +
+    "</tbody>";
 }
 
 /* ----------------------------------------------------------------- events */
@@ -1705,24 +1646,25 @@ function bindEvents() {
     startJob("/api/backtest/run", backtestParams(), "backtest");
   });
 
-  $("start-search").addEventListener("click", async () => {
-    const jobId = await startJob("/api/search/start", searchParams(), "search");
+  $("start-walkforward").addEventListener("click", async () => {
+    const params = wfParams();
+    if (!params.k_up.length || !params.k_down.length || !params.holding.length) {
+      toast("each grid needs at least one value", "error");
+      return;
+    }
+    const jobId = await startJob("/api/walkforward/start", params, "walk-forward");
     if (jobId) {
-      state.search = null;
-      renderSearch();
+      state.walkforward = null;
+      renderWalkforward();
     }
   });
 
-  $("stop-search").addEventListener("click", async () => {
-    const job = state.jobs.find(
-      (entry) =>
-        entry.kind === "search" &&
-        (entry.status === "running" || entry.status === "queued")
-    );
+  $("stop-walkforward").addEventListener("click", async () => {
+    const job = currentWalkforwardJob();
     if (!job) return;
     try {
       await api(`/api/jobs/${job.id}/stop`, { method: "POST", body: {} });
-      toast("stop requested — the current candidate will finish and save", "info");
+      toast("stop requested — the fold in flight will finish and save", "info");
     } catch (error) {
       if (error.message !== "unauthorised") toast(error.message, "error");
     }

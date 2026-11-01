@@ -50,7 +50,7 @@
   <button data-panel="leakage"><span class="tab-num">3</span>Look-ahead check<span class="tab-dot" data-dot="leakage"></span></button>
   <button data-panel="training"><span class="tab-num">4</span>Training<span class="tab-dot" data-dot="training"></span></button>
   <button data-panel="backtest"><span class="tab-num">5</span>Backtest<span class="tab-dot" data-dot="backtest"></span></button>
-  <button data-panel="search"><span class="tab-num">6</span>Auto-search<span class="tab-dot" data-dot="search"></span></button>
+  <button data-panel="search"><span class="tab-num">6</span>Walk-forward<span class="tab-dot" data-dot="search"></span></button>
   <span class="tabs-gap"></span>
   <button data-panel="exchange" class="tab-secondary">Exchange rules</button>
   <button data-panel="console" class="tab-secondary">Activity<span class="badge hidden" id="job-badge">0</span></button>
@@ -410,75 +410,82 @@
 </section>
 
 
-<!-- --------------------------------------------------------------- search -->
+<!-- --------------------------------------------------------- walk-forward -->
 <section class="panel" id="panel-search">
   <p class="panel-intro">
-    Tries many profit-target / stop / holding combinations, trains a model for
-    each, and ranks them by how they would have done on <strong>validation</strong>
-    data — history the model never trained on. Settings whose target cannot pay
-    for the round-trip cost are skipped before any training happens, so the
-    hours go to candidates that could plausibly work. Every result is written to
-    disk as it lands, so you can leave it running and come back later.
+    Trains a fresh model on everything before each 90-day block, then trades
+    that block, then slides forward. Nineteen blocks cover six years, so you see
+    the <em>distribution</em> of quarters instead of one lucky split.
   </p>
 
   <div class="row">
     <div class="card">
-      <div class="card-head"><h2>Budget</h2></div>
-      <form id="search-form" class="grid-form">
-        <label>Total hours
-          <input id="search-hours" type="number" step="0.5" min="0.1" max="12" value="3" />
-          <span class="hint">The sweep stops here, wherever it is.</span>
-        </label>
-        <label>Minutes per candidate
-          <input id="search-per" type="number" step="1" min="1" max="60" value="4" />
-          <span class="hint">Training time for each setting. More time = better models, fewer settings.</span>
-        </label>
-        <label>Max candidates
-          <input id="search-max" type="number" step="1" min="1" max="200" value="40" />
-        </label>
-        <label>Fees (bps per side)
-          <input id="search-fees" type="number" step="1" min="0" max="100" value="10" />
-        </label>
-        <label>Slippage (bps per side)
-          <input id="search-slip" type="number" step="1" min="0" max="100" value="2" />
-        </label>
-        <label>Device
-          <select id="search-device">
-            <option value="auto">automatic (test the GPU)</option>
-            <option value="cpu">CPU only</option>
+      <div class="card-head"><h2>What to try</h2></div>
+      <form id="wf-form" class="grid-form">
+        <label>Timeframe
+          <select id="wf-interval">
+            <option value="4h" selected>4h</option>
+            <option value="1h">1h</option>
+            <option value="1d">1d</option>
           </select>
+          <span class="hint">4h is where fees stop dominating the move. Bars download automatically.</span>
+        </label>
+        <label>Profit targets (× ATR)
+          <input id="wf-k-up" value="3,3.5,4" />
+          <span class="hint">Comma list — each value is a row in the grid.</span>
+        </label>
+        <label>Stop losses (× ATR)
+          <input id="wf-k-down" value="2.5,3" />
+          <span class="hint">Comma list.</span>
+        </label>
+        <label>Max holding (bars)
+          <input id="wf-holding" value="192,288" />
+          <span class="hint">At 4h, 192 bars is 32 days and 288 is 48.</span>
+        </label>
+        <label>Model windows
+          <input id="wf-window" value="32,64" />
+          <span class="hint">Bars of history the model sees per prediction.</span>
+        </label>
+        <label>Seeds
+          <input id="wf-seeds" value="7,8,9" />
+          <span class="hint">More seeds separate a real edge from a lucky initialisation.</span>
+        </label>
+        <label>Test block (days)
+          <input id="wf-test-days" type="number" min="30" max="365" value="90" />
+        </label>
+        <label>Validation (days)
+          <input id="wf-val-days" type="number" min="30" max="365" value="90" />
+        </label>
+        <label>Epochs per fold
+          <input id="wf-epochs" type="number" min="1" max="200" value="15" />
         </label>
       </form>
       <div class="controls">
-        <button class="primary" id="start-search">Start the search</button>
-        <button id="stop-search" disabled>Stop</button>
+        <button class="primary" id="start-walkforward">Start the sweep</button>
+        <button id="stop-walkforward" disabled>Stop</button>
       </div>
-      <p class="hint" id="search-note"></p>
     </div>
 
     <div class="card grow">
-      <div class="card-head"><h2>Progress</h2><span class="badge" id="search-state">never run</span></div>
-      <dl class="stats" id="search-stats"><dt>—</dt><dd>No search yet.</dd></dl>
-    </div>
-  </div>
-
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="search-best"></span></div>
-      <div class="table-wrap"><table class="table" id="search-table"></table></div>
-      <p class="hint" style="margin-top:8px">
-        Sorted by <strong>score</strong> = validation return − ¼ × max drawdown;
-        anything under 20 trades scores as unranked. The test column is data the
-        model never saw, but the settings were chosen on validation — so test is
-        the honest estimate and validation is the optimistic one.
+      <div class="card-head"><h2>Progress</h2><span class="badge" id="wf-state">idle</span></div>
+      <dl class="stats" id="wf-stats"><dt>—</dt><dd>No sweep yet.</dd></dl>
+      <p class="hint" id="wf-note">
+        A setting is only ranked once every fold has finished, so the leaderboard
+        fills in one row at a time, roughly every two minutes.
       </p>
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-head"><h2>Best candidate — validation equity</h2><span class="muted small" id="search-curve-meta"></span></div>
-    <div id="search-chart" class="chart"></div>
-    <p class="hint" style="margin-top:8px">What the best setting so far would have made on validation, after fees and slippage.</p>
+  <div class="card grow">
+    <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="wf-best"></span></div>
+    <div class="table-wrap"><table class="table" id="wf-table"></table></div>
+    <p class="hint" style="margin-top:8px">
+      <strong>median quarter</strong> — the typical 90-day block, after fees.
+      <strong>worst</strong> — the quarter that pays for the rest.
+      <strong>≥ +5%</strong> — how often the goal was cleared.
+      <strong>beats hold</strong> — how often it beat simply holding PAXG over
+      the same block. That last one is the number that matters.
+    </p>
   </div>
 </section>
 

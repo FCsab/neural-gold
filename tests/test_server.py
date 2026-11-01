@@ -392,3 +392,47 @@ def test_search_sweep_runs_and_is_recorded(seeded_client: TestClient):
 
     assert "Infinity" not in jsonlib.dumps(report)
     assert "score" in report["rows"][0]
+
+
+# -- walk-forward ----------------------------------------------------------
+def test_walkforward_endpoints_exist(client: TestClient):
+    assert client.get("/api/walkforward/last", headers=AUTH).status_code == 404
+    assert client.post("/api/walkforward/start", headers=AUTH, json={"interval": "nope"}).status_code == 422
+
+
+def test_walkforward_sweep_runs_and_records(seeded_client: TestClient):
+    response = seeded_client.post(
+        "/api/walkforward/start",
+        headers=AUTH,
+        json={
+            "interval": "5m",
+            "k_up": [2.0],
+            "k_down": [1.5],
+            "holding": [12],
+            "window": [16],
+            "seeds": [7],
+            "test_days": 1,
+            "val_days": 1,
+            "min_train_days": 2,
+            "epochs": 1,
+            "device": "cpu",
+        },
+    )
+    assert response.status_code == 200, response.text
+    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=600)
+
+    assert job["status"] in {"ok", "stopped"}, job
+    report = job["result"]
+    assert report["folds_total"] > 0
+    assert report["specs_total"] == 1
+    assert report["leaderboard"], report
+
+    best = report["leaderboard"][0]
+    assert best["folds"] >= 1
+    assert "median_return" in best and "share_beating_hold" in best
+
+    live = seeded_client.get("/api/walkforward/last", headers=AUTH).json()
+    assert live["folds_total"] == report["folds_total"]
+
+    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    assert info["walkforward"]["folds_total"] == report["folds_total"]

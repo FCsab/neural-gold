@@ -82,12 +82,18 @@ slippage on both sides, and draws the equity curve against simply holding
 PAXG. Leads with a verdict; flags the case where the profit target is smaller
 than the round-trip cost, because then nothing can be profitable.
 
-**Auto-search** — sweeps label settings for a budget of hours, training and
-backtesting each candidate. The leaderboard fills in while the job runs (the
-report is rewritten after every candidate and polled every few seconds), and
-the best candidate's validation equity is drawn underneath. Selecting on
-validation, reporting on test, and pruning untradeable settings are described
-in `docs/search.md`.
+**Walk-forward** — the honest evaluation. Pick a timeframe and a region of
+label settings, plus how many seeds; each setting is trained and traded across
+every 90-day block of the last six years. The leaderboard shows median quarter,
+worst quarter, share clearing +5%, and share beating buy-and-hold — the last
+one being the only number that says whether the model adds anything over doing
+nothing. Runs resume: a restart skips the folds already on disk. See
+`docs/overnight.md`.
+
+The older single-split auto-search still exists on the API
+(`/api/search/*`) but is no longer in the UI: it ranked settings on one
+validation window, which produced validation +41% and test −4% from the same
+model.
 
 **Exchange rules** — cached `exchangeInfo` filters (tick size, step size,
 notional limits). Never hardcoded anywhere in the codebase.
@@ -115,8 +121,10 @@ does not, and contains no data.
 | GET | `/api/train/status` | torch availability and dataset readiness |
 | POST | `/api/backtest/run` | `{model_id?, fee_bps, slippage_bps, ...}` → backtest job |
 | GET | `/api/backtest/last` | the persisted backtest report |
-| POST | `/api/search/start` | `{total_minutes, per_candidate_minutes, ...}` → sweep job |
-| GET | `/api/search/last` | live leaderboard, rewritten after each candidate |
+| POST | `/api/walkforward/start` | `{interval, k_up[], k_down[], holding[], window[], seeds[], ...}` → sweep job |
+| GET | `/api/walkforward/last` | leaderboard + progress, rewritten after each fold |
+| POST | `/api/search/start` | legacy single-split sweep (kept for the API) |
+| GET | `/api/search/last` | legacy sweep report |
 | GET | `/api/models` | registry listing |
 | GET | `/api/models/{id}` | one model plus its runs |
 | GET | `/api/jobs` | job summaries (no logs) |

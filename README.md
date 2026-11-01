@@ -48,12 +48,11 @@ numbers.
 - **4 Training** — run for N minutes or until you press Stop.
 - **5 Backtest** — replay the unseen test slice as trades with fees and
   slippage, equity curve against buy-and-hold.
-- **6 Auto-search** — sweep label settings unattended for hours; picks the
-  winner on validation, reports it on test, and skips settings that cannot
-  pay for their own fees.
-- **Walk-forward** — `scripts/overnight.py` evaluates settings across rolling
-  3-month blocks instead of one split, and runs until you stop it. See
-  `docs/overnight.md`.
+- **6 Walk-forward** — trains a model on everything before each 90-day block,
+  trades that block, and slides forward across six years. You get the
+  distribution of quarters, not one lucky split: median, worst, how often it
+  clears +5%, and how often it beats simply holding. Runs from the browser;
+  `scripts/overnight.py` is the same engine for an unattended machine.
 - **Exchange rules** — fetch and cache `exchangeInfo` filters.
 - **Activity** — every job, live progress, full log.
 
