@@ -91,6 +91,24 @@ The numbers that matter, given a goal of +5% per quarter:
   up quarters and down ones.
 - **worst_return** — the quarter that pays for everything else.
 
+## Re-testing one region
+
+The full grid is the right first pass; a focused re-test is the right second
+one. Narrow the search space and give it several seeds:
+
+```bash
+nohup bash scripts/overnight_ctl.sh --interval 4h \
+  --k-up 3.5,4 --k-down 2.5,3,4 --holding 192,288 --window 32,64 \
+  --seeds 7,8,9 >/dev/null 2>&1 &
+```
+
+Because results are keyed by setting *and* seed, reusing `data/overnight`
+skips the seed-7 work already done and only runs the new seeds.
+
+This is how a promising cell gets separated from a lucky initialisation: a
+single seed can show a +6% median quarter, while the same cell across three
+seeds settles to its real mean.
+
 ## Resume
 
 The runner reads `results.jsonl` at startup and skips any fold already

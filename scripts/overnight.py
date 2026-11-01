@@ -49,22 +49,28 @@ def _handle_signal(_signum, _frame) -> None:
     STOP["requested"] = True
 
 
-def spec_stream():
-    """Endless stream of label/window configurations, one seed per pass."""
-    seed = 7
+def spec_stream(k_up=K_UP, k_down=K_DOWN, holding=HOLDING, window=WINDOW, seeds=(7,)):
+    """Endless stream of configurations, looping over the given seeds forever.
+
+    The defaults walk the whole grid once per seed, advancing the seed when the
+    grid is exhausted so an unattended machine always has work. Narrowing the
+    lists is how a region of the grid gets a seed-averaged re-test.
+    """
+    index = 0
     while True:
-        for k_up in K_UP:
-            for k_down in K_DOWN:
-                for holding in HOLDING:
-                    for window in WINDOW:
+        seed = seeds[index % len(seeds)]
+        for up in k_up:
+            for down in k_down:
+                for hold in holding:
+                    for win in window:
                         yield {
-                            "k_up": k_up,
-                            "k_down": k_down,
-                            "holding": holding,
-                            "window": window,
+                            "k_up": up,
+                            "k_down": down,
+                            "holding": hold,
+                            "window": win,
                             "seed": seed,
                         }
-        seed += 1
+        index += 1
 
 
 def spec_key(spec: dict) -> str:
@@ -90,7 +96,29 @@ def main() -> int:
     parser.add_argument("--fee-bps", type=float, default=10.0)
     parser.add_argument("--slippage-bps", type=float, default=2.0)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--k-up", default=None, help="comma list, e.g. 3,3.5,4 (default: full grid)"
+    )
+    parser.add_argument("--k-down", default=None, help="comma list")
+    parser.add_argument("--holding", default=None, help="comma list of bar counts")
+    parser.add_argument("--window", default=None, help="comma list of bar counts")
+    parser.add_argument(
+        "--seeds", default="7", help="comma list of seeds to cycle through"
+    )
     args = parser.parse_args()
+
+    def number_list(raw, default, cast=float):
+        if raw is None:
+            return tuple(default)
+        return tuple(cast(part) for part in raw.split(",") if part.strip())
+
+    grid = dict(
+        k_up=number_list(args.k_up, K_UP),
+        k_down=number_list(args.k_down, K_DOWN),
+        holding=number_list(args.holding, HOLDING, int),
+        window=number_list(args.window, WINDOW, int),
+        seeds=number_list(args.seeds, (7,), int),
+    )
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -192,7 +220,7 @@ def main() -> int:
     write_status("starting")
 
     try:
-        for spec in spec_stream():
+        for spec in spec_stream(**grid):
             if stop_file.exists() or STOP["requested"]:
                 break
 
