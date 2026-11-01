@@ -49,7 +49,9 @@ numbers.
 - **5 Backtest** — replay the unseen test slice as trades with fees and
   slippage, equity curve against buy-and-hold.
 - **6 Walk-forward** — trains a model on everything before each 90-day block,
-  trades that block, and slides forward across six years. You get the
+  trades that block, and slides forward across six years. Two policies: trade
+  the barrier signal, or stay long by default and step aside when the model
+  says stop — the direct test against just holding. You get the
   distribution of quarters, not one lucky split: median, worst, how often it
   clears +5%, and how often it beats simply holding. Runs from the browser;
   `scripts/overnight.py` is the same engine for an unattended machine.

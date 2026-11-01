@@ -29,6 +29,7 @@ import numpy as np
 import torch
 
 from .dataset import build_dataset
+from .hold_policy import run_hold_policy
 
 from .backtest import (
     BacktestConfig,
@@ -113,6 +114,7 @@ def evaluate_fold(
     backtest_config: BacktestConfig,
     open_by_time: dict[int, float],
     *,
+    policy: str = "signal",
     should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Train on the fold's train/validation blocks, then trade its test block."""
@@ -146,7 +148,10 @@ def evaluate_fold(
     rows = np.arange(fold.test[0], fold.test[1])
     probabilities = predict_proba(checkpoint, frame, rows)
     prepared = prepare_backtest_frame(frame, rows, open_by_time)
-    backtest = run_backtest(prepared, probabilities, backtest_config)
+    if policy == "hold":
+        backtest = run_hold_policy(prepared, probabilities, backtest_config)
+    else:
+        backtest = run_backtest(prepared, probabilities, backtest_config)
     metrics = backtest.metrics
 
     return {
@@ -209,6 +214,7 @@ class SweepConfig:
     lr: float = 3e-4
     minutes_per_fold: float = 3.0
     device: str = "auto"
+    policy: str = "signal"
 
 
 def spec_key(spec: dict[str, Any]) -> str:
@@ -358,6 +364,7 @@ def run_sweep(
                         checkpoint_dir,
                         backtest_config,
                         open_by_time,
+                        policy=sweep.policy,
                     )
                 except Exception as exc:  # noqa: BLE001 - one bad fold is not the sweep
                     emit(f"fold failed {key}: {type(exc).__name__}: {exc}")

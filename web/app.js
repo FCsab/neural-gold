@@ -1440,6 +1440,7 @@ function numberList(id, cast = Number) {
 function wfParams() {
   return {
     interval: $("wf-interval").value,
+    policy: $("wf-policy").value,
     k_up: numberList("wf-k-up"),
     k_down: numberList("wf-k-down"),
     holding: numberList("wf-holding", (v) => parseInt(v, 10)),

@@ -35,6 +35,21 @@ Each fold trains a fresh model, picks its best epoch by validation loss, then
 trades the test block through the normal backtest (10 bps fee, 2 bps slippage,
 entry at the next bar's open).
 
+## Two ways to trade the signal
+
+The sweep scores the same trained model two ways, chosen per run:
+
+- **signal** (default) — trade only when the model's top class is *target*,
+  exit at the barrier or the timeout. Measures whether the barrier signal
+  works as a standalone strategy.
+- **hold** — stay long like buy-and-hold, go flat only while the model's top
+  class is *stop*. Measures whether the signal knows when to be **out**, which
+  is the only version that can beat holding without also having to time
+  entries perfectly.
+
+Both charge 10 bps fee + 2 bps slippage per side. For `hold`, the number that
+matters is `share_beating_hold`: how often stepping aside beat never leaving.
+
 ## What is swept
 
 | Setting | Values |

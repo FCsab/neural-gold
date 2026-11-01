@@ -1028,6 +1028,7 @@ def run_walkforward(config: AppConfig, params: dict[str, Any], ctx) -> dict[str,
             lr=float(params["lr"]),
             minutes_per_fold=float(params["minutes_per_fold"]),
             device=str(params["device"]),
+            policy=str(params.get("policy", "signal")),
         ),
         backtest_config=BacktestConfig(
             fee_bps=float(params["fee_bps"]),

@@ -175,3 +175,58 @@ def test_healthy_costs_are_not_flagged():
 
     assert result.metrics["cost_exceeds_target"] is False
     assert result.metrics["avg_gross_win"] == pytest.approx(0.10)
+
+
+def _hold_frame(closes):
+    """The hold policy only needs these three columns."""
+    import numpy as np
+    import pandas as pd
+
+    n = len(closes)
+    return pd.DataFrame(
+        {
+            "open_time": np.arange(n, dtype="int64") * 300_000,
+            "entry_price": np.array(closes, dtype="float64"),
+            "close": np.array(closes, dtype="float64"),
+        }
+    )
+
+
+def test_hold_policy_stays_long_and_steps_aside():
+    """Long by default; flat only while the model's top class is 'stop'."""
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 110.0, 121.0, 121.0])
+    # class order is (-1, 0, +1): bearish, then bullish
+    probabilities = np.array(
+        [
+            [0.8, 0.1, 0.1],
+            [0.1, 0.1, 0.8],
+            [0.1, 0.1, 0.8],
+            [0.1, 0.1, 0.8],
+        ]
+    )
+    result = run_hold_policy(frame, probabilities, BacktestConfig(fee_bps=0, slippage_bps=0))
+
+    # flat on the bearish bar, buys at 110, rides to 121
+    assert result.metrics["trades"] == 1
+    assert result.metrics["total_return"] == pytest.approx(0.10)
+    assert result.metrics["exposure"] == pytest.approx(0.75)
+    assert result.metrics["buy_hold_return"] == pytest.approx(0.21)
+
+
+def test_hold_policy_charges_costs_on_both_sides():
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 100.0, 100.0, 100.0])
+    probabilities = np.array([[0.1, 0.1, 0.8]] * 4)
+
+    free = run_hold_policy(frame, probabilities, BacktestConfig(fee_bps=0, slippage_bps=0))
+    costly = run_hold_policy(frame, probabilities, BacktestConfig(fee_bps=10, slippage_bps=2))
+
+    assert costly.metrics["total_return"] < free.metrics["total_return"]
+    assert costly.metrics["round_trip_cost"] == pytest.approx(0.0024)

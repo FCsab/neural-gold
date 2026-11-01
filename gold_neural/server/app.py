@@ -86,6 +86,9 @@ class WalkforwardParams(BaseModel):
     fee_bps: float = Field(default=10.0, ge=0, le=100)
     slippage_bps: float = Field(default=2.0, ge=0, le=100)
     device: Literal["auto", "cpu"] = "auto"
+    # "signal": trade the barrier signal. "hold": stay long unless the model
+    # says stop, which is the direct test against buy-and-hold.
+    policy: Literal["signal", "hold"] = "signal"
 
 
 class SearchParams(BaseModel):

@@ -430,6 +430,13 @@
           </select>
           <span class="hint">4h is where fees stop dominating the move. Bars download automatically.</span>
         </label>
+        <label>Strategy
+          <select id="wf-policy">
+            <option value="hold">long by default, exit when the model says stop</option>
+            <option value="signal">trade only when the model says buy</option>
+          </select>
+          <span class="hint">“Long by default” keeps you in like buy-and-hold and only steps aside on a bearish signal — the direct test against holding.</span>
+        </label>
         <label>Profit targets (× ATR)
           <input id="wf-k-up" value="3,3.5,4" />
           <span class="hint">Comma list — each value is a row in the grid.</span>

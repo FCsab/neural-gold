@@ -387,5 +387,6 @@ def prepare_backtest_frame(frame, rows, open_by_time: dict[int, float]):
             "exit_price": sliced["exit_price"].to_numpy(dtype=np.float64),
             "holding_bars": sliced["holding_bars"].to_numpy(dtype=np.int64),
             "label": sliced["label"].to_numpy(dtype=np.int64),
+            "close": sliced["close"].to_numpy(dtype=np.float64),
         }
     )
