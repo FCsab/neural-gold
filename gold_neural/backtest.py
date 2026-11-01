@@ -348,3 +348,44 @@ def verdict(metrics: dict[str, Any]) -> dict[str, Any]:
             f"did worse than just holding PAXG ({hold * 100:+.1f}%). Do not trade this."
         ),
     }
+
+
+def open_price_lookup(config) -> dict[int, float]:
+    """open_time -> open price, used to fill entries at the next bar's open."""
+    from .data.store import store_from_config
+
+    bars = store_from_config(config).load_bars()
+    return dict(
+        zip(
+            bars["open_time"].astype("int64").tolist(),
+            bars["open"].astype("float64").tolist(),
+        )
+    )
+
+
+def prepare_backtest_frame(frame, rows, open_by_time: dict[int, float]):
+    """Slice the dataset to ``rows`` and attach a tradeable entry price."""
+    import numpy as np
+    import pandas as pd
+
+    sliced = frame.iloc[rows].reset_index(drop=True)
+    opens = np.array(
+        [open_by_time.get(int(t), float("nan")) for t in sliced["open_time"]],
+        dtype=np.float64,
+    )
+    next_open = np.full(len(opens), np.nan, dtype=np.float64)
+    if len(opens) > 1:
+        next_open[:-1] = opens[1:]
+    closes = sliced["close"].to_numpy(dtype=np.float64)
+    entry = np.where(np.isfinite(next_open), next_open, closes)
+
+    return pd.DataFrame(
+        {
+            "open_time": sliced["open_time"].to_numpy(dtype=np.int64),
+            "entry_price": entry,
+            "exit_time": sliced["exit_time"].to_numpy(dtype=np.int64),
+            "exit_price": sliced["exit_price"].to_numpy(dtype=np.float64),
+            "holding_bars": sliced["holding_bars"].to_numpy(dtype=np.int64),
+            "label": sliced["label"].to_numpy(dtype=np.int64),
+        }
+    )

@@ -103,9 +103,11 @@ class TrainResult:
 # --------------------------------------------------------------------------
 # data preparation
 # --------------------------------------------------------------------------
-def _scaled(values: np.ndarray, train_end: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Standardise with statistics from the training slice only."""
-    train = values[:train_end]
+def _scaled(
+    values: np.ndarray, start: int, end: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Standardise with statistics from the training rows only."""
+    train = values[start:end]
     mean = train.mean(axis=0, dtype=np.float64).astype(np.float32)
     std = train.std(axis=0, dtype=np.float64).astype(np.float32)
     std = np.where(std < 1e-8, 1.0, std).astype(np.float32)
@@ -197,7 +199,14 @@ def train_model(
     *,
     progress: Callable[[dict[str, Any]], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    splits: dict[str, tuple[int, int]] | None = None,
 ) -> TrainResult:
+    """Train on ``frame``.
+
+    ``splits`` overrides the fraction split with explicit ``(start, end)``
+    row ranges — walk-forward folds need the boundaries to land exactly on
+    their own blocks rather than on 70/15/15 of whatever frame was passed.
+    """
     started = time.monotonic()
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
@@ -217,13 +226,22 @@ def train_model(
 
     n_rows = len(frame)
     window = int(config.window)
-    train_end = int(n_rows * config.train_frac)
-    val_end = int(n_rows * (config.train_frac + config.val_frac))
     first = window - 1
 
-    train_rows = np.arange(first, train_end)
-    val_rows = np.arange(max(train_end, first), val_end)
-    test_rows = np.arange(max(val_end, first), n_rows)
+    if splits is not None:
+        train_range = (int(splits["train"][0]), int(splits["train"][1]))
+        val_range = (int(splits["validation"][0]), int(splits["validation"][1]))
+        test_range = (int(splits["test"][0]), int(splits["test"][1]))
+    else:
+        train_end = int(n_rows * config.train_frac)
+        val_end = int(n_rows * (config.train_frac + config.val_frac))
+        train_range = (first, train_end)
+        val_range = (max(train_end, first), val_end)
+        test_range = (max(val_end, first), n_rows)
+
+    train_rows = np.arange(train_range[0], train_range[1])
+    val_rows = np.arange(val_range[0], val_range[1])
+    test_rows = np.arange(test_range[0], test_range[1])
 
     if len(train_rows) < 200 or len(val_rows) < 50 or len(test_rows) < 50:
         raise ValueError(
@@ -231,7 +249,7 @@ def train_model(
             f"train={len(train_rows)} val={len(val_rows)} test={len(test_rows)}"
         )
 
-    scaled, mean, std = _scaled(values, train_end)
+    scaled, mean, std = _scaled(values, train_range[0], train_range[1])
     windows = np.lib.stride_tricks.sliding_window_view(scaled, window, axis=0)
 
     def batch_tensor(row_indices: np.ndarray) -> torch.Tensor:
