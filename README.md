@@ -51,6 +51,9 @@ numbers.
 - **6 Auto-search** — sweep label settings unattended for hours; picks the
   winner on validation, reports it on test, and skips settings that cannot
   pay for their own fees.
+- **Walk-forward** — `scripts/overnight.py` evaluates settings across rolling
+  3-month blocks instead of one split, and runs until you stop it. See
+  `docs/overnight.md`.
 - **Exchange rules** — fetch and cache `exchangeInfo` filters.
 - **Activity** — every job, live progress, full log.
 
