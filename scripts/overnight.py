@@ -41,7 +41,7 @@ STOP = {"requested": False}
 # pointless, and a stop much wider than the target skews the payoff.
 K_UP = (3.0, 4.0, 2.5, 3.5, 2.0, 5.0)
 K_DOWN = (2.0, 3.0, 1.5, 2.5, 4.0)
-HOLDING = (24, 48, 96, 12, 6)
+HOLDING = (24, 48, 96, 12, 6, 288, 192)
 WINDOW = (64, 32, 128)
 
 
@@ -223,6 +223,7 @@ def main() -> int:
                 continue
 
             batch = by_spec.setdefault(key_base, [])
+            added = 0
             for fold in folds:
                 key = f"{key_base}|f{fold.index}"
                 if key in done:
@@ -261,12 +262,13 @@ def main() -> int:
                     handle.write(json.dumps(row) + "\n")
                 done.add(key)
                 batch.append(row)
+                added += 1
                 folds_done += 1
 
                 if folds_done % 5 == 0:
                     write_status(f"{key_base} fold {fold.index + 1}/{len(folds)}")
 
-            if batch:
+            if added:
                 summary = summarise(batch)
                 write_status(f"done {key_base}")
                 log(
