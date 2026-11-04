@@ -181,3 +181,29 @@ def test_learning_rate_warms_up_then_decays(prepared, tmp_path):
     assert len(rates) == 8
     assert rates[0] < rates[3], "warm-up should raise the rate over the first epochs"
     assert rates[-1] < rates[3], "cosine decay should end below the peak"
+
+
+def test_purge_drops_rows_whose_label_resolves_in_the_next_block():
+    import numpy as np
+
+    from gold_neural.training import purge_overlap
+
+    bars = synthetic_bars(n=1500)
+    frame = build_dataset(
+        bars, FeatureConfig(), LabelConfig(max_holding_bars=48)
+    ).frame
+    train = np.arange(0, 800)
+    val = np.arange(800, 1100)
+    test = np.arange(1100, 1400)
+
+    kept_train, kept_val, purged = purge_overlap(frame, train, val, test)
+
+    exit_time = frame["exit_time"].to_numpy()
+    open_time = frame["open_time"].to_numpy()
+    # Every surviving row is decided before the next block opens...
+    assert (exit_time[kept_train] < open_time[val[0]]).all()
+    assert (exit_time[kept_val] < open_time[test[0]]).all()
+    # ...something was actually purged, and only from the tail.
+    assert purged["train"] > 0 and purged["validation"] > 0
+    assert kept_train[0] == train[0] and kept_val[0] == val[0]
+    assert purged["train"] <= 48 and purged["validation"] <= 48

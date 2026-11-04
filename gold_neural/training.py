@@ -191,6 +191,40 @@ def _save_checkpoint(path: Path, payload: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------
 # the loop
 # --------------------------------------------------------------------------
+def purge_overlap(
+    frame: pd.DataFrame,
+    train_rows: np.ndarray,
+    val_rows: np.ndarray,
+    test_rows: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    """Drop rows whose label is decided by prices in the next block.
+
+    A triple-barrier label at row ``t`` is resolved by bars up to its
+    ``exit_time``. A training row near the end of the train block can resolve
+    inside validation, so the model is fitted on validation prices and then
+    early-stopped on them; a validation row can likewise resolve inside test.
+    Both make the validation score, and anything selected on it, optimistic.
+
+    Purging by each row's own exit time is exact: no row is dropped that did
+    not overlap, whatever the holding cap. Frames without label timing (bare
+    feature frames) are returned unchanged.
+    """
+    if "exit_time" not in frame or "open_time" not in frame:
+        return train_rows, val_rows, {"train": 0, "validation": 0}
+    exit_time = frame["exit_time"].to_numpy(dtype=np.int64)
+    open_time = frame["open_time"].to_numpy(dtype=np.int64)
+
+    kept_train, kept_val = train_rows, val_rows
+    if len(val_rows) and len(train_rows):
+        kept_train = train_rows[exit_time[train_rows] < open_time[val_rows[0]]]
+    if len(test_rows) and len(val_rows):
+        kept_val = val_rows[exit_time[val_rows] < open_time[test_rows[0]]]
+    return kept_train, kept_val, {
+        "train": int(len(train_rows) - len(kept_train)),
+        "validation": int(len(val_rows) - len(kept_val)),
+    }
+
+
 def train_model(
     frame: pd.DataFrame,
     feature_names: list[str],
@@ -242,6 +276,7 @@ def train_model(
     train_rows = np.arange(train_range[0], train_range[1])
     val_rows = np.arange(val_range[0], val_range[1])
     test_rows = np.arange(test_range[0], test_range[1])
+    train_rows, val_rows, purged = purge_overlap(frame, train_rows, val_rows, test_rows)
 
     if len(train_rows) < 200 or len(val_rows) < 50 or len(test_rows) < 50:
         raise ValueError(
@@ -487,6 +522,7 @@ def train_model(
     )
     metrics["test_loss"] = round(test_loss, 6)
     metrics["best_epoch"] = int(best_epoch)
+    metrics["purged_rows"] = purged
     metrics["best_val_loss"] = None if math.isinf(best_val) else round(best_val, 6)
     metrics["val_accuracy"] = round(
         float(
