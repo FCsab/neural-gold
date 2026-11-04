@@ -224,9 +224,16 @@ def run_backtest(
         # Cannot open a new position before this one closes.
         i += max(1, int(holding[i]) + 1)
 
-    # Buy-and-hold over the same window, with one round trip of costs.
+    # Buy-and-hold over the same block, with one round trip of costs. A label's
+    # exit price at the last row can sit past the block when the holding time is
+    # long, so prefer the block's own close.
     first_entry = entry_price[0] if np.isfinite(entry_price[0]) else exit_price[0]
-    last_exit = exit_price[-1] if np.isfinite(exit_price[-1]) else first_entry
+    if "close" in frame:
+        last_exit = float(frame["close"].to_numpy(dtype=np.float64)[-1])
+    else:
+        last_exit = exit_price[-1]
+    if not np.isfinite(last_exit):
+        last_exit = first_entry
     buy_hold = 0.0
     if first_entry and last_exit and first_entry > 0:
         buy_hold = (last_exit * (1 - slip - fee)) / (first_entry * (1 + slip + fee)) - 1.0

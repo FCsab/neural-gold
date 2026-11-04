@@ -6,6 +6,11 @@ same code the web UI drives. This script only parses arguments, backfills if
 the bars are missing, and loops the spec iterator forever so an unattended
 machine always has work.
 
+The default policy is ``hold``: stay long, step aside only when the model is
+confident about the stop outcome, and let validation decide how confident that
+has to be. That is the only formulation that can be compared directly against
+buy-and-hold, which is the question this project is trying to answer.
+
 For the browser, use the Walk-forward tab instead.
 """
 
@@ -27,14 +32,22 @@ from gold_neural.config import load_config
 from gold_neural.data.backfill import backfill
 from gold_neural.data.store import store_from_config
 from gold_neural.exchange.rest import interval_to_ms
-from gold_neural.walkforward import SweepConfig, run_sweep
+from gold_neural.walkforward import (
+    DEFAULT_STOP_THRESHOLDS,
+    SweepConfig,
+    run_sweep,
+)
 
 STOP = {"requested": False}
 
-K_UP = (3.0, 4.0, 2.5, 3.5, 2.0, 5.0)
-K_DOWN = (2.0, 3.0, 1.5, 2.5, 4.0)
-HOLDING = (24, 48, 96, 12, 6, 288, 192)
-WINDOW = (64, 32, 128)
+K_UP = (2.5, 3.0, 3.5, 4.0)
+K_DOWN = (2.0, 2.5, 3.0, 4.0)
+HOLDING = (192, 288)
+WINDOW = (32, 64, 128)
+# Stop probabilities are selected per fold on the validation block. 1.0 means
+# "never step aside", so holding is always on the menu and a bad rule cannot
+# be forced into the test block.
+STOP_THRESHOLDS = DEFAULT_STOP_THRESHOLDS
 
 
 def _handle_signal(_signum, _frame) -> None:
@@ -42,20 +55,31 @@ def _handle_signal(_signum, _frame) -> None:
 
 
 def spec_stream(k_up=K_UP, k_down=K_DOWN, holding=HOLDING, window=WINDOW, seeds=(7,)):
-    """Endless stream of configurations, cycling the given seeds."""
+    """Endless stream of configurations.
+
+    The first passes use the supplied seeds. Once those are exhausted the seed
+    advances past the largest one, so the runner never reaches a state where
+    every key is already on disk and it spins without doing work.
+    """
+    base = tuple(int(seed) for seed in seeds) or (7,)
+    total = len(k_up) * len(k_down) * len(holding) * len(window)
     index = 0
     while True:
-        seed = seeds[index % len(seeds)]
+        seed = base[index] if index < len(base) else max(base) + index - len(base) + 1
+        pass_index = 0
         for up in k_up:
             for down in k_down:
                 for hold in holding:
                     for win in window:
+                        pass_index += 1
                         yield {
                             "k_up": up,
                             "k_down": down,
                             "holding": hold,
                             "window": win,
                             "seed": seed,
+                            "pass_index": pass_index,
+                            "pass_total": total,
                         }
         index += 1
 
@@ -81,6 +105,19 @@ def main() -> int:
     parser.add_argument("--holding", default=None, help="comma list of bar counts")
     parser.add_argument("--window", default=None, help="comma list of bar counts")
     parser.add_argument("--seeds", default="7", help="comma list of seeds")
+    parser.add_argument(
+        "--policy",
+        choices=("hold", "signal"),
+        default="hold",
+        help="hold = long by default, step aside on stop (the buy-and-hold test)",
+    )
+    parser.add_argument(
+        "--stop-thresholds",
+        default=",".join(str(value) for value in STOP_THRESHOLDS),
+        help="comma list of stop probabilities; 1.0 = never step aside",
+    )
+    parser.add_argument("--reentry-margin", type=float, default=0.05)
+    parser.add_argument("--min-flat-bars", type=int, default=1)
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -117,10 +154,21 @@ def main() -> int:
     bars = store.load_bars()
     bars_per_day = 86_400_000 // interval_to_ms(args.interval)
 
+    thresholds = tuple(
+        float(part) for part in args.stop_thresholds.split(",") if part.strip()
+    )
+    up_grid = number_list(args.k_up, K_UP)
+    down_grid = number_list(args.k_down, K_DOWN)
+    holding_grid = number_list(args.holding, HOLDING, int)
+    window_grid = number_list(args.window, WINDOW, int)
+    seed_list = number_list(args.seeds, (7,), int)
+    grid_size = len(up_grid) * len(down_grid) * len(holding_grid) * len(window_grid)
+
     log(
         f"start: {args.interval} · {len(bars):,} bars · "
         f"test {bars_per_day * args.test_days} bars · seeds "
-        f"{number_list(args.seeds, (7,), int)}"
+        f"{seed_list} · policy {args.policy} · "
+        f"stop thresholds {thresholds} · {grid_size} settings/pass"
     )
 
     stop_file = out / "STOP"
@@ -128,11 +176,11 @@ def main() -> int:
         config=config,
         bars=bars,
         specs=spec_stream(
-            k_up=number_list(args.k_up, K_UP),
-            k_down=number_list(args.k_down, K_DOWN),
-            holding=number_list(args.holding, HOLDING, int),
-            window=number_list(args.window, WINDOW, int),
-            seeds=number_list(args.seeds, (7,), int),
+            k_up=up_grid,
+            k_down=down_grid,
+            holding=holding_grid,
+            window=window_grid,
+            seeds=seed_list,
         ),
         sweep=SweepConfig(
             test_bars=bars_per_day * args.test_days,
@@ -143,6 +191,11 @@ def main() -> int:
             lr=args.lr,
             minutes_per_fold=args.minutes_per_fold,
             device=args.device,
+            policy=args.policy,
+            stop_thresholds=thresholds,
+            reentry_margin=args.reentry_margin,
+            min_flat_bars=args.min_flat_bars,
+            specs_per_pass=grid_size,
         ),
         backtest_config=BacktestConfig(
             fee_bps=args.fee_bps, slippage_bps=args.slippage_bps

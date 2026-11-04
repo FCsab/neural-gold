@@ -97,9 +97,12 @@ else:
     )
     print(
         f"progress   {status.get('folds_total', 0):,} folds on disk"
-        f"  ·  {status.get('specs_tracked', 0)} settings tracked"
+        f"  ·  {status.get('specs_done', 0)} settings tracked"
     )
-    print(f"current    {status.get('current', '-')}")
+    print(
+        f"current    {status.get('current', '-')}"
+        f"  ·  policy {status.get('policy', '?')}"
+    )
 
 rows = 0
 if results_path.exists():
@@ -111,14 +114,22 @@ if status is not None and rows and rows != status.get("folds_total"):
 board = (status or {}).get("leaderboard") or []
 if board:
     print()
-    print(f"{BOLD}best settings so far, by median 3-month return{RESET}")
+    ranked_by = status.get("ranked_by", "median_return")
+    metric = (
+        "median excess vs hold"
+        if ranked_by == "median_excess"
+        else "median 3-month return"
+    )
+    print(f"{BOLD}best settings so far, by {metric}{RESET}")
     header = (
         f"  {'setting':<22}{'folds':>6}{'median':>9}{'worst':>9}"
         f"{'>=+5%':>7}{'beats hold':>12}{'compounded':>12}"
     )
     print(f"{DIM}{header}{RESET}")
     for entry in board[:8]:
-        name = entry.get("spec", "?")
+        name = entry.get("spec", "?").replace("|hold", "")
+        if entry.get("complete") is False:
+            name += " (partial)"
         print(
             f"  {name:<22}{entry.get('folds', 0):>6}"
             f"{pct(entry.get('median_return')):>9}"

@@ -230,3 +230,99 @@ def test_hold_policy_charges_costs_on_both_sides():
 
     assert costly.metrics["total_return"] < free.metrics["total_return"]
     assert costly.metrics["round_trip_cost"] == pytest.approx(0.0024)
+
+
+def test_hold_policy_threshold_only_exits_when_confident():
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 100.0, 100.0, 100.0, 100.0])
+    stop = np.array([0.2, 0.7, 0.2, 0.2, 0.2], dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+    config = BacktestConfig(fee_bps=0, slippage_bps=0)
+
+    cautious = run_hold_policy(frame, probabilities, config, stop_threshold=0.8)
+    reactive = run_hold_policy(frame, probabilities, config, stop_threshold=0.5)
+
+    # 0.7 is above the cautious line, so the position is never touched.
+    assert cautious.metrics["trades"] == 1
+    assert cautious.metrics["exposure"] == pytest.approx(1.0)
+    # A lower line steps aside once and re-enters on the next calm bar.
+    assert reactive.metrics["trades"] == 2
+    assert reactive.metrics["exposure"] == pytest.approx(0.8)
+
+
+def test_hold_policy_reentry_margin_prevents_churn():
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 100.0, 100.0, 100.0, 100.0])
+    stop = np.array([0.2, 0.62, 0.58, 0.50, 0.2], dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+    config = BacktestConfig(fee_bps=0, slippage_bps=0)
+
+    tight = run_hold_policy(
+        frame, probabilities, config, stop_threshold=0.6, reentry_margin=0.0
+    )
+    gated = run_hold_policy(
+        frame, probabilities, config, stop_threshold=0.6, reentry_margin=0.05
+    )
+
+    # 0.58 is below the raw line but above the gated one, so the gated policy
+    # waits for 0.50 and spends one less bar exposed.
+    assert tight.metrics["trades"] == gated.metrics["trades"] == 2
+    assert gated.metrics["exposure"] < tight.metrics["exposure"]
+
+
+def test_hold_policy_threshold_one_never_steps_aside():
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 101.0, 102.0, 103.0, 104.0])
+    stop = np.full(5, 0.99, dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+
+    result = run_hold_policy(
+        frame, probabilities, BacktestConfig(fee_bps=0, slippage_bps=0),
+        stop_threshold=1.0,
+        min_flat_bars=1,
+    )
+
+    # A cooldown must not delay the very first entry.
+    assert result.metrics["trades"] == 1
+    assert result.metrics["exposure"] == pytest.approx(1.0)
+    assert result.metrics["total_return"] == pytest.approx(0.04)
+
+
+def test_hold_policy_threshold_one_ignores_a_saturated_stop_probability():
+    import numpy as np
+
+    from gold_neural.hold_policy import run_hold_policy
+
+    frame = _hold_frame([100.0, 101.0, 102.0, 103.0])
+    # float32 softmax can round the stop class to exactly 1.0.
+    stop = np.array([0.2, 1.0, 1.0, 0.2], dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+
+    result = run_hold_policy(
+        frame, probabilities, BacktestConfig(fee_bps=10, slippage_bps=2),
+        stop_threshold=1.0,
+    )
+
+    assert result.metrics["trades"] == 1
+    assert result.metrics["exposure"] == pytest.approx(1.0)
+
+
+def test_buy_hold_uses_the_block_close_not_a_future_label_exit():
+    """A long holding time must not let the baseline borrow future returns."""
+    frame = _frame(rows=4, entry=100.0, exit_price=130.0, holding=3)
+    frame["close"] = [100.0, 101.0, 102.0, 105.0]
+
+    result = run_backtest(
+        frame, _probs(len(frame)), BacktestConfig(fee_bps=0, slippage_bps=0)
+    )
+
+    assert result.metrics["buy_hold_return"] == pytest.approx(0.05)

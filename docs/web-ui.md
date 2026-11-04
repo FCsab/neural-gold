@@ -25,13 +25,16 @@ The certificate is self-signed, so the browser shows a warning once per
 device. For anything beyond a trusted LAN, point `server.cert_path` and
 `server.key_path` at a real certificate.
 
-## The page is a four-step guide
+## Three tabs: Data, Model, Backtest
 
-The work is a pipeline, so the UI is numbered like one:
+The work is grouped by what you are doing, not by pipeline order:
 
-```
-1 Market data → 2 Labels & dataset → 3 Look-ahead check → 4 Training → 5 Backtest → 6 Auto-search
-```
+- **Data** — market data, labels & dataset, look-ahead check, exchange rules.
+- **Model** — training, walk-forward, and the detached research campaign.
+- **Backtest** — the unseen test slice, traded with costs.
+
+Sections stack inside a tab with a divider between them. A status dot per tab
+and a next-step banner always name the one thing left to do.
 
 Each tab shows a status dot (grey = not done, green = done, red = failed), and
 a **Next step** banner above the tabs always names the one thing to do next and
@@ -56,7 +59,7 @@ yet. Balanced accuracy 39.3% is below the 48.5% of always guessing the most
 common outcome.”* The tables underneath carry a one-line explanation of what
 precision, recall and the confusion matrix mean.
 
-## What each tab does
+## What each section does
 
 **Market data** — candlestick chart of stored bars (24h / 7d / 30d), what is
 stored, a data check that looks for broken candles, duplicates and missing
@@ -89,6 +92,16 @@ worst quarter, share clearing +5%, and share beating buy-and-hold — the last
 one being the only number that says whether the model adds anything over doing
 nothing. Runs resume: a restart skips the folds already on disk. See
 `docs/overnight.md`.
+
+**Research** — starts the detached, resumable campaign from the browser. It is
+the same engine as `scripts/overnight_ctl.sh`, but the form also exposes the
+hold-policy threshold grid, the seed list, the block sizes and the costs. The
+campaign runs in its own process: closing the tab or restarting the server does
+not stop it. The panel shows live progress, the recent log, a leaderboard ranked
+by median excess over holding, and two charts for the selected setting — paired
+bars for each quarter (strategy vs buy-and-hold) and a cumulative line. Click a
+leaderboard row to chart that setting; partial settings are labelled `7/19` and
+dimmed. Stop with the button or `touch data/overnight/STOP`.
 
 The older single-split auto-search still exists on the API
 (`/api/search/*`) but is no longer in the UI: it ranked settings on one
@@ -123,6 +136,9 @@ does not, and contains no data.
 | GET | `/api/backtest/last` | the persisted backtest report |
 | POST | `/api/walkforward/start` | `{interval, k_up[], k_down[], holding[], window[], seeds[], ...}` → sweep job |
 | GET | `/api/walkforward/last` | leaderboard + progress, rewritten after each fold |
+| POST | `/api/research/start` | start the detached campaign (`{interval, policy, grids, seeds, ...}`) |
+| GET | `/api/research/status?spec=&folds=` | campaign status, leaderboard, and per-fold rows for charting |
+| POST | `/api/research/stop` | write `<data>/overnight/STOP`; the fold in flight finishes |
 | POST | `/api/search/start` | legacy single-split sweep (kept for the API) |
 | GET | `/api/search/last` | legacy sweep report |
 | GET | `/api/models` | registry listing |
@@ -148,6 +164,10 @@ GOLDNEURAL_API_TOKEN=... .venv/bin/python scripts/smoke.py \
   else. It is never stored in SQLite or in `config.yaml`.
 - The server binds `0.0.0.0` because the plan asks for LAN access. Put it
   behind a firewall if the LAN is not trusted; there is no account system.
+- The Research tab can start a local process. It is behind the same bearer
+  token; the server builds an argument list (never a shell) and does not accept
+  a path from the client. The campaign writes only under its own data
+  directory.
 
 ## Why no React/Vite build
 
@@ -176,6 +196,7 @@ gold_neural/server/
   security.py                token resolution, IP allowlist, auth dependency
   tls.py                     self-signed certificate bootstrap
   reports.py                 data/reports/*.json persistence
+  research.py                detached campaign: start, stop, status, fold rows
 gold_neural/model.py         window transformer + GPU probe
 gold_neural/training.py      training loop, time budget, cooperative stop
 gold_neural/backtest.py      trade simulation, fees, equity curve

@@ -99,3 +99,58 @@ def test_evaluate_fold_trains_and_trades_its_block(tmp_path):
     assert row["fold"] == fold.index
     assert row["test_start_ms"] == fold.test_start_ms
     assert set(row) >= {"return", "buy_hold", "excess", "trades", "max_drawdown"}
+
+
+def test_choose_stop_threshold_selects_on_validation():
+    import numpy as np
+    import pandas as pd
+
+    from gold_neural.walkforward import choose_stop_threshold
+
+    closes = np.array([100.0, 110.0, 90.0, 95.0])
+    frame = pd.DataFrame(
+        {
+            "open_time": np.arange(4, dtype=np.int64) * 300_000,
+            "entry_price": closes,
+            "close": closes,
+        }
+    )
+    stop = np.array([0.1, 0.9, 0.1, 0.1], dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+    config = BacktestConfig(fee_bps=0, slippage_bps=0)
+
+    threshold, metrics = choose_stop_threshold(
+        frame, probabilities, config, (0.5, 0.6, 0.7, 1.0)
+    )
+
+    # Stepping aside at 110 avoids the fall to 90; holding does not.
+    assert threshold < 1.0
+    assert metrics["excess_return"] > 0.0
+
+
+def test_choose_stop_threshold_holds_when_nothing_beats_holding():
+    import numpy as np
+    import pandas as pd
+
+    from gold_neural.walkforward import choose_stop_threshold
+
+    closes = np.array([100.0, 105.0, 110.0, 115.0])
+    frame = pd.DataFrame(
+        {
+            "open_time": np.arange(4, dtype=np.int64) * 300_000,
+            "entry_price": closes,
+            "close": closes,
+        }
+    )
+    # The stop warning arrives mid-rally: obeying it sells at 105 and buys
+    # back at 110, which loses to simply staying long.
+    stop = np.array([0.1, 0.9, 0.1, 0.1], dtype=float)
+    probabilities = np.column_stack([stop, (1 - stop) / 2, (1 - stop) / 2])
+    config = BacktestConfig(fee_bps=0, slippage_bps=0)
+
+    threshold, metrics = choose_stop_threshold(
+        frame, probabilities, config, (0.5, 0.6, 0.7, 1.0)
+    )
+
+    assert threshold == 1.0
+    assert metrics["total_return"] == pytest.approx(metrics["buy_hold_return"])

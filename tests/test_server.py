@@ -157,7 +157,10 @@ def test_dataset_build_job_writes_report(seeded_client: TestClient):
     assert job["status"] == "ok", job
     result = job["result"]
     assert result["rows"] > 0
-    assert result["features"] == 21
+    from gold_neural.config import FeatureConfig
+    from gold_neural.features import feature_names
+
+    assert result["features"] == len(feature_names(FeatureConfig()))
     assert result["split"]["train"] > result["split"]["test"] > 0
     assert "1" in result["by_class"] or "-1" in result["by_class"]
 

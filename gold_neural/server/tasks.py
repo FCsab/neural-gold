@@ -968,7 +968,7 @@ def run_walkforward(config: AppConfig, params: dict[str, Any], ctx) -> dict[str,
     bars live beside the 5m ones, so the browser can ask for either.
     """
     from ..backtest import BacktestConfig
-    from ..walkforward import SweepConfig, run_sweep
+    from ..walkforward import DEFAULT_STOP_THRESHOLDS, SweepConfig, run_sweep
 
     interval = str(params.get("interval") or config.exchange.interval)
     local = replace(config, exchange=replace(config.exchange, interval=interval))
@@ -1029,6 +1029,13 @@ def run_walkforward(config: AppConfig, params: dict[str, Any], ctx) -> dict[str,
             minutes_per_fold=float(params["minutes_per_fold"]),
             device=str(params["device"]),
             policy=str(params.get("policy", "signal")),
+            stop_thresholds=(
+                DEFAULT_STOP_THRESHOLDS
+                if params.get("policy") == "hold"
+                else ()
+            ),
+            reentry_margin=0.05,
+            min_flat_bars=1,
         ),
         backtest_config=BacktestConfig(
             fee_bps=float(params["fee_bps"]),

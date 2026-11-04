@@ -45,14 +45,10 @@
 </div>
 
 <nav class="tabs" id="tabs">
-  <button data-panel="data"><span class="tab-num">1</span>Market data<span class="tab-dot" data-dot="data"></span></button>
-  <button data-panel="dataset"><span class="tab-num">2</span>Labels &amp; dataset<span class="tab-dot" data-dot="dataset"></span></button>
-  <button data-panel="leakage"><span class="tab-num">3</span>Look-ahead check<span class="tab-dot" data-dot="leakage"></span></button>
-  <button data-panel="training"><span class="tab-num">4</span>Training<span class="tab-dot" data-dot="training"></span></button>
-  <button data-panel="backtest"><span class="tab-num">5</span>Backtest<span class="tab-dot" data-dot="backtest"></span></button>
-  <button data-panel="search"><span class="tab-num">6</span>Walk-forward<span class="tab-dot" data-dot="search"></span></button>
+  <button data-group="data"><span class="tab-num">1</span>Data<span class="tab-dot" data-group-dot="data"></span></button>
+  <button data-group="model"><span class="tab-num">2</span>Model<span class="tab-dot" data-group-dot="model"></span></button>
+  <button data-group="backtest"><span class="tab-num">3</span>Backtest<span class="tab-dot" data-group-dot="backtest"></span></button>
   <span class="tabs-gap"></span>
-  <button data-panel="exchange" class="tab-secondary">Exchange rules</button>
   <button data-panel="console" class="tab-secondary">Activity<span class="badge hidden" id="job-badge">0</span></button>
 </nav>
 
@@ -401,6 +397,7 @@
     <div class="card-head"><h2>Equity</h2><span class="muted small" id="bt-meta"></span></div>
     <div id="bt-chart" class="chart"></div>
     <p class="hint" style="margin-top:8px">Gold line: the model's equity after each trade, costs included. Grey dashed line: the same money simply holding PAXG.</p>
+    <p class="chart-verdict" id="bt-chart-verdict"></p>
   </div>
 
   <details class="card">
@@ -492,6 +489,153 @@
       <strong>≥ +5%</strong> — how often the goal was cleared.
       <strong>beats hold</strong> — how often it beat simply holding PAXG over
       the same block. That last one is the number that matters.
+    </p>
+  </div>
+</section>
+
+
+<!-- --------------------------------------------------------------- research -->
+<section class="panel" id="panel-research">
+  <p class="panel-intro">
+    Starts the long campaign: the same walk-forward engine, detached from this
+    tab. It keeps training if you close the browser or restart the server, and
+    resumes from the folds already on disk. Leave it running overnight; the
+    charts fill in as each setting finishes all of its quarters.
+  </p>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Campaign settings</h2>
+      <span class="badge" id="rs-state">idle</span>
+    </div>
+    <form id="rs-form" class="grid-form">
+      <label>Timeframe
+        <select id="rs-interval">
+          <option value="4h" selected>4h</option>
+          <option value="1h">1h</option>
+          <option value="1d">1d</option>
+        </select>
+        <span class="hint">4h is where fees stop dominating the move.</span>
+      </label>
+      <label>Strategy
+        <select id="rs-policy">
+          <option value="hold" selected>long by default, exit on stop</option>
+          <option value="signal">trade only on a buy signal</option>
+        </select>
+        <span class="hint">“Long by default” is the direct test against holding.</span>
+      </label>
+      <label>Profit targets (× ATR)
+        <input id="rs-k-up" value="2.5,3,3.5,4" />
+        <span class="hint">Comma list — each value is a row in the grid.</span>
+      </label>
+      <label>Stop losses (× ATR)
+        <input id="rs-k-down" value="2,2.5,3,4" />
+        <span class="hint">Comma list.</span>
+      </label>
+      <label>Max holding (bars)
+        <input id="rs-holding" value="192,288" />
+        <span class="hint">At 4h, 192 is 32 days and 288 is 48.</span>
+      </label>
+      <label>Model windows
+        <input id="rs-window" value="32,64,128" />
+        <span class="hint">Bars of history per prediction.</span>
+      </label>
+      <label>Seeds
+        <input id="rs-seeds" value="7" />
+        <span class="hint">The runner advances past these when a pass finishes.</span>
+      </label>
+      <label>Epochs per fold
+        <input id="rs-epochs" type="number" min="1" max="500" value="15" />
+      </label>
+      <label>Minutes per fold
+        <input id="rs-minutes" type="number" min="0.1" max="120" step="0.1" value="3" />
+      </label>
+      <label>Test block (days)
+        <input id="rs-test-days" type="number" min="1" max="365" value="90" />
+      </label>
+      <label>Validation (days)
+        <input id="rs-val-days" type="number" min="1" max="365" value="90" />
+      </label>
+      <label>Min train (days)
+        <input id="rs-min-train-days" type="number" min="1" max="3000" value="365" />
+      </label>
+      <label>Fee (bps)
+        <input id="rs-fee-bps" type="number" min="0" max="100" value="10" />
+      </label>
+      <label>Slippage (bps)
+        <input id="rs-slip-bps" type="number" min="0" max="100" value="2" />
+      </label>
+      <label>Stop thresholds
+        <input id="rs-thresholds" value="0.3,0.35,0.4,0.45,0.5,0.55,0.6,1" />
+        <span class="hint">Chosen per fold on validation. 1.0 = never step aside.</span>
+      </label>
+      <label>Re-entry margin
+        <input id="rs-reentry" type="number" min="0" max="0.5" step="0.01" value="0.05" />
+      </label>
+      <label>Min flat bars
+        <input id="rs-min-flat" type="number" min="0" max="100" value="1" />
+      </label>
+      <label>Device
+        <select id="rs-device">
+          <option value="auto" selected>auto</option>
+          <option value="cpu">cpu</option>
+        </select>
+      </label>
+    </form>
+    <div class="controls">
+      <button class="primary" id="rs-start">Start campaign</button>
+      <button id="rs-stop" disabled>Stop after this fold</button>
+    </div>
+    <p class="hint">
+      The campaign is a separate process. Closing this tab or restarting the
+      server does not stop it. Use <strong>Stop</strong>, or
+      <code>touch data/overnight/STOP</code> from a shell.
+    </p>
+  </div>
+
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head"><h2>Progress</h2><span class="muted small" id="rs-best"></span></div>
+      <dl class="stats" id="rs-stats"><dt>—</dt><dd>No campaign yet.</dd></dl>
+    </div>
+    <div class="card grow">
+      <div class="card-head"><h2>Log</h2><span class="muted small">one line per finished setting</span></div>
+      <pre class="log compact rs-log" id="rs-log">No campaign log yet.</pre>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card grow">
+      <div class="card-head"><h2>Quarter by quarter</h2><span class="muted small" id="rs-quarter-note"></span></div>
+      <div class="rs-chart" id="rs-quarter-chart">
+        <p class="muted small">Waiting for the first setting to finish all of its folds.</p>
+      </div>
+      <div class="rs-legend">
+        <span class="rs-key"><i style="background:#d9b25f"></i> strategy</span>
+        <span class="rs-key"><i style="background:#5a6c85"></i> buy &amp; hold</span>
+      </div>
+      <p class="chart-verdict" id="rs-quarter-verdict"></p>
+    </div>
+    <div class="card grow">
+      <div class="card-head"><h2>Cumulative</h2><span class="muted small" id="rs-cum-note"></span></div>
+      <div class="rs-chart" id="rs-cum-chart">
+        <p class="muted small">Waiting for the first setting to finish all of its folds.</p>
+      </div>
+      <div class="rs-legend">
+        <span class="rs-key"><i style="background:#d9b25f"></i> strategy</span>
+        <span class="rs-key"><i style="background:#5a6c85"></i> buy &amp; hold</span>
+      </div>
+      <p class="chart-verdict" id="rs-cum-verdict"></p>
+    </div>
+  </div>
+
+  <div class="card grow">
+    <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="rs-board-note"></span></div>
+    <div class="table-wrap"><table class="table rs-table" id="rs-leaderboard"></table></div>
+    <p class="hint">
+      Ranked by <strong>median excess</strong> over holding, not raw return.
+      Click a row to chart that setting. A setting appears once all of its folds
+      finish.
     </p>
   </div>
 </section>

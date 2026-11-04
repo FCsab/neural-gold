@@ -36,25 +36,29 @@ remembers it.
   transport   HTTPS (self-signed)
 ```
 
-The page is a numbered six-step guide — market data, labels, look-ahead
-check, training, backtest, auto-search — with a status dot per step and a
-“next step” banner that always names the one thing left to do. Every control has a plain-English
-help line, and training results open with a verdict in words before the
-numbers.
+The page has three tabs — **Data** (market data, labels, look-ahead, exchange
+rules), **Model** (training, walk-forward, research), and **Backtest** — plus
+an Activity log. A status dot per tab and a “next step” banner always name the
+one thing left to do. Every control has a plain-English help line, and results
+open with a verdict in words before the numbers.
 
-- **1 Market data** — candlestick chart, what is stored, data check, backfill.
-- **2 Labels & dataset** — barrier settings, label preview, build Parquet.
-- **3 Look-ahead check** — the mandatory leakage suite, with metrics.
-- **4 Training** — run for N minutes or until you press Stop.
-- **5 Backtest** — replay the unseen test slice as trades with fees and
+- **Market data** — candlestick chart, what is stored, data check, backfill.
+- **Labels & dataset** — barrier settings, label preview, build Parquet.
+- **Look-ahead check** — the mandatory leakage suite, with metrics.
+- **Training** — run for N minutes or until you press Stop.
+- **Backtest** — replay the unseen test slice as trades with fees and
   slippage, equity curve against buy-and-hold.
-- **6 Walk-forward** — trains a model on everything before each 90-day block,
+- **Walk-forward** — trains a model on everything before each 90-day block,
   trades that block, and slides forward across six years. Two policies: trade
   the barrier signal, or stay long by default and step aside when the model
   says stop — the direct test against just holding. You get the
   distribution of quarters, not one lucky split: median, worst, how often it
   clears +5%, and how often it beats simply holding. Runs from the browser;
   `scripts/overnight.py` is the same engine for an unattended machine.
+- **Research** — starts that campaign from the browser as a detached,
+  resumable process. Progress, log, leaderboard, and two charts (quarter by
+  quarter, cumulative against holding) update live; it keeps running if the
+  tab or the server closes.
 - **Exchange rules** — fetch and cache `exchangeInfo` filters.
 - **Activity** — every job, live progress, full log.
 
@@ -71,7 +75,14 @@ The same operations exist as a CLI, which is what CI and cron should use:
 .venv/bin/python -m gold_neural.cli dataset --out data/dataset.parquet
 .venv/bin/python -m gold_neural.cli leakage --out data/leakage-report.json
 .venv/bin/pytest
+./scripts/start_night.sh                    # unattended hold-policy sweep
 ```
+
+`scripts/start_night.sh` launches the same walk-forward engine in the
+background, with the hold policy as the default, and ranks settings by excess
+return over buy-and-hold. It resumes from the folds already on disk; see
+`docs/overnight.md` for the grid, the stop-threshold rule, and how to read the
+output.
 
 `leakage` exits non-zero when any check fails, so it gates a build without a
 wrapper script. `scripts/smoke.py` checks a running server end to end.

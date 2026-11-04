@@ -22,11 +22,17 @@ const state = {
   btSeries: null,
   btHoldSeries: null,
   walkforward: null,
+  research: null,
+  researchSummary: null,
+  researchSpec: null,
   rangeBars: 288,
   ws: null,
   wsRetry: null,
   refreshTimer: null,
   refreshing: false,
+  apiOnline: false,
+  wsConnected: false,
+  lastRefresh: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -147,6 +153,9 @@ function hideLogin() {
 /* ---------------------------------------------------------------- panels */
 function switchPanel(name) {
   document
+    .querySelectorAll("#tabs button[data-group]")
+    .forEach((button) => button.classList.remove("active"));
+  document
     .querySelectorAll("#tabs button[data-panel]")
     .forEach((button) => button.classList.toggle("active", button.dataset.panel === name));
   document
@@ -170,6 +179,71 @@ function switchPanel(name) {
   if (name === "search") {
     renderWalkforward();
   }
+  if (name === "research") {
+    refreshResearch().catch((error) => {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    });
+  }
+}
+
+const PANEL_GROUPS = {
+  data: ["data", "dataset", "leakage", "exchange"],
+  model: ["training", "search", "research"],
+  backtest: ["backtest"],
+};
+
+function switchGroup(name) {
+  const panels = PANEL_GROUPS[name] || [name];
+  document
+    .querySelectorAll("#tabs button[data-group]")
+    .forEach((button) => button.classList.toggle("active", button.dataset.group === name));
+  document.querySelectorAll("#tabs button[data-panel]").forEach((button) => {
+    button.classList.toggle("active", panels.includes(button.dataset.panel));
+  });
+  document.querySelectorAll(".panel").forEach((panel) => {
+    panel.classList.toggle(
+      "active",
+      panels.includes(panel.id.replace("panel-", ""))
+    );
+  });
+
+  if (panels.includes("data")) {
+    ensureChart();
+    loadBars();
+    renderExchange();
+  }
+  if (panels.includes("training")) {
+    renderTrainingPanel();
+    const job = currentTrainingJob();
+    if (job) updateTrainLog(job.id);
+  }
+  if (panels.includes("backtest")) {
+    ensureBtChart();
+    renderBacktestChart();
+  }
+  if (panels.includes("search")) renderWalkforward();
+  if (panels.includes("research")) {
+    refreshResearch().catch((error) => {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    });
+  }
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+
+/** Open the tab group that owns a panel; used by the next-step banner. */
+function openPanel(name) {
+  for (const [group, panels] of Object.entries(PANEL_GROUPS)) {
+    if (!panels.includes(name)) continue;
+    switchGroup(group);
+    const target = document.getElementById(`panel-${name}`);
+    if (target) {
+      requestAnimationFrame(() =>
+        target.scrollIntoView({ behavior: "smooth", block: "start" })
+      );
+    }
+    return;
+  }
+  switchPanel(name);
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -207,6 +281,16 @@ async function boot() {
       .catch(() => {});
   }, 3000);
 
+  setInterval(() => {
+    if ($("panel-research").classList.contains("active")) {
+      refreshResearch().catch(() => {});
+    }
+  }, 4000);
+
+  setInterval(() => {
+    if (state.token) refreshAll().catch(() => {});
+  }, 15000);
+
   if (!state.token) {
     showLogin("");
     return;
@@ -228,15 +312,19 @@ async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const [status, info, jobs, models] = await Promise.all([
+    const [status, info, jobs, models, researchSummary] = await Promise.all([
       api("/api/status"),
       api("/api/data/info"),
       api("/api/jobs"),
       api("/api/models"),
+      api("/api/research/status?folds=0").catch(() => null),
     ]);
     state.status = status;
     state.info = info;
+    state.apiOnline = true;
+    state.lastRefresh = Date.now();
     state.models = models.models || [];
+    state.researchSummary = researchSummary;
     if (info.walkforward) state.walkforward = info.walkforward;
     applyJobs(jobs.jobs || []);
     renderStatus();
@@ -250,6 +338,10 @@ async function refreshAll() {
     renderWalkforward();
     renderPipeline();
     renderIntro();
+  } catch (error) {
+    state.apiOnline = false;
+    renderStatus();
+    throw error;
   } finally {
     state.refreshing = false;
   }
@@ -447,6 +539,11 @@ function connectWs() {
   }
   state.ws = socket;
 
+  socket.onopen = () => {
+    state.wsConnected = true;
+    renderStatus();
+  };
+
   socket.onmessage = (event) => {
     try {
       const message = JSON.parse(event.data);
@@ -458,6 +555,8 @@ function connectWs() {
 
   socket.onclose = (event) => {
     state.ws = null;
+    state.wsConnected = false;
+    renderStatus();
     if (event.code === 4401) {
       showLogin("token rejected");
       return;
@@ -619,6 +718,7 @@ function nextStepFor(stage) {
 
 function renderPipeline() {
   const stage = computeStage();
+  const rs = state.researchSummary || state.research;
 
   const dots = {
     data: stage.hasBars ? "done" : "",
@@ -628,9 +728,31 @@ function renderPipeline() {
     training: stage.hasModel ? "done" : "",
     backtest: stage.hasBacktest ? "done" : "",
     search: stage.search && stage.search.status === "done" ? "done" : "",
+    research: rs
+      ? rs.running
+        ? "warn"
+        : rs.status && rs.status.status === "done"
+          ? "done"
+          : ""
+      : "",
   };
   Object.entries(dots).forEach(([key, cls]) => {
     const dot = document.querySelector(`[data-dot="${key}"]`);
+    if (dot) dot.className = "tab-dot" + (cls ? " " + cls : "");
+  });
+
+  const groupDots = {
+    data: stage.hasBars ? "done" : "",
+    model:
+      rs && rs.running
+        ? "warn"
+        : stage.hasModel || stage.search || (rs && rs.best_spec)
+          ? "done"
+          : "",
+    backtest: stage.hasBacktest ? "done" : "",
+  };
+  Object.entries(groupDots).forEach(([key, cls]) => {
+    const dot = document.querySelector(`[data-group-dot="${key}"]`);
     if (dot) dot.className = "tab-dot" + (cls ? " " + cls : "");
   });
 
@@ -729,7 +851,14 @@ function renderStatus() {
       ? (coverage.end_ms - coverage.start_ms) / (365.25 * 86400000)
       : null;
 
-  const chips = [`<span class="chip">${status.symbol} · ${status.interval}</span>`];
+  const updated = state.lastRefresh
+    ? new Date(state.lastRefresh).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : "waiting";
+  const chips = [
+    `<span class="chip signal ${state.apiOnline ? "ok" : "bad"}">${state.apiOnline ? "API online" : "API offline"}</span>`,
+    `<span class="chip signal ${state.wsConnected ? "ok" : ""}">${state.wsConnected ? "live updates" : "reconnecting"}</span>`,
+    `<span class="chip">${status.symbol} · ${status.interval}</span>`,
+  ];
   chips.push(
     `<span class="chip">${
       rows ? `${fmtInt(rows)} bars${years ? ` · ${years.toFixed(1)} yrs` : ""}` : "no bars yet"
@@ -751,6 +880,7 @@ function renderStatus() {
       models.length ? `${models.length} model${models.length === 1 ? "" : "s"}` : "no models yet"
     }</span>`
   );
+  chips.push(`<span class="chip freshness">updated ${updated}</span>`);
 
   $("status-chips").innerHTML = chips.join("");
 }
@@ -1115,8 +1245,11 @@ function sparkline(history) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const last = points[points.length - 1].split(",");
+  const firstY = height - pad - ((values[0] - min) / span) * (height - pad * 2);
 
   return `<svg class="spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+    <line x1="${pad}" x2="${width - pad}" y1="${firstY.toFixed(1)}" y2="${firstY.toFixed(1)}"
+      stroke="#5a6c85" stroke-width="1" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>
     <polyline points="${points.join(" ")}" fill="none" stroke="#d9b25f" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
     <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="#d9b25f"/>
   </svg>`;
@@ -1222,7 +1355,7 @@ function renderTrainResult(result, options = {}) {
       <div>
         <h3 class="subhead">Validation loss</h3>
         ${sparkline(result.history) || '<p class="muted small">no epochs recorded</p>'}
-        <p class="muted small">best epoch ${fmtInt(metrics.best_epoch)} · best val loss ${fmtNum(metrics.best_val_loss, 4)}</p>
+        <p class="muted small">lower is better · dashed = first epoch · best epoch ${fmtInt(metrics.best_epoch)} · best val loss ${fmtNum(metrics.best_val_loss, 4)}</p>
       </div>
     </div>`;
 }
@@ -1306,8 +1439,22 @@ function ensureBtChart() {
 
 function renderBacktestChart() {
   const report = state.info && state.info.backtest;
-  if (!report || !state.btSeries) return;
+  if (!report || !state.btSeries) {
+    const verdict = $("bt-chart-verdict");
+    if (verdict) verdict.textContent = "";
+    return;
+  }
   const metrics = report.metrics || {};
+  const total = Number(metrics.total_return) || 0;
+  const hold = Number(metrics.buy_hold_return) || 0;
+  const lead = total - hold;
+  const verdict = $("bt-chart-verdict");
+  if (verdict) {
+    verdict.textContent =
+      `Model ${fmtPct(total, 1)} vs holding ${fmtPct(hold, 1)} — ` +
+      `${lead >= 0 ? "ahead" : "behind"} by ${fmtPct(Math.abs(lead), 1)}`;
+    verdict.className = "chart-verdict " + (lead >= 0 ? "pos" : "neg");
+  }
   const curve = (report.equity_curve || []).map((point) => ({
     time: Math.floor(point.time),
     value: point.equity,
@@ -1536,6 +1683,494 @@ function renderWalkforward() {
     "</tbody>";
 }
 
+/* --------------------------------------------------------------- research */
+function rsParams() {
+  return {
+    interval: $("rs-interval").value,
+    policy: $("rs-policy").value,
+    k_up: numberList("rs-k-up"),
+    k_down: numberList("rs-k-down"),
+    holding: numberList("rs-holding", (value) => parseInt(value, 10)),
+    window: numberList("rs-window", (value) => parseInt(value, 10)),
+    seeds: numberList("rs-seeds", (value) => parseInt(value, 10)),
+    epochs: numberOr($("rs-epochs").value) ?? 15,
+    minutes_per_fold: numberOr($("rs-minutes").value) ?? 3,
+    test_days: numberOr($("rs-test-days").value) ?? 90,
+    val_days: numberOr($("rs-val-days").value) ?? 90,
+    min_train_days: numberOr($("rs-min-train-days").value) ?? 365,
+    fee_bps: numberOr($("rs-fee-bps").value) ?? 10,
+    slippage_bps: numberOr($("rs-slip-bps").value) ?? 2,
+    stop_thresholds: numberList("rs-thresholds"),
+    reentry_margin: numberOr($("rs-reentry").value) ?? 0.05,
+    min_flat_bars: numberOr($("rs-min-flat").value) ?? 1,
+    device: $("rs-device").value,
+  };
+}
+
+function currentResearchSpec() {
+  const report = state.research;
+  return state.researchSpec || (report && report.best_spec) || null;
+}
+
+async function refreshResearch(spec = state.researchSpec) {
+  if (!state.token) return;
+  const suffix = spec ? `?spec=${encodeURIComponent(spec)}` : "";
+  state.research = await api(`/api/research/status${suffix}`);
+  state.researchSummary = state.research;
+  renderPipeline();
+  renderResearch();
+}
+
+function renderResearch() {
+  const report = state.research;
+  const status = (report && report.status) || null;
+  const running = Boolean(report && report.running);
+  const stopping = Boolean(report && report.stop_requested);
+
+  $("rs-start").disabled = running;
+  $("rs-stop").disabled = !running || stopping;
+
+  let label = "idle";
+  if (running) label = stopping ? "stopping" : "running";
+  else if (status && status.status) {
+    label = status.status === "running" ? "exited" : status.status;
+  }
+
+  const badge = $("rs-state");
+  badge.textContent = label;
+  badge.className =
+    "badge" +
+    (running ? " warn" : status && status.status === "done" ? " ok" : "");
+
+  const stats = $("rs-stats");
+  if (!status) {
+    stats.innerHTML =
+      "<dt>—</dt><dd>No campaign yet. Set a grid and press Start.</dd>";
+  } else {
+    const rows = [
+      ["state", label],
+      ["policy", status.policy || "—"],
+      [
+        "settings",
+        `${fmtInt(status.specs_done ?? status.specs_tracked)}${
+          status.specs_total ? " / " + fmtInt(status.specs_total) : ""
+        }`,
+      ],
+      [
+        "remaining",
+        status.remaining == null ? "—" : `${fmtInt(status.remaining)} settings`,
+      ],
+      ["seed", status.seed == null ? "—" : String(status.seed)],
+      ["folds scored", fmtInt(status.folds_total)],
+      ["rate", `${fmtNum(status.folds_per_minute, 1)} folds/min`],
+      ["elapsed", `${fmtNum(status.elapsed_minutes, 1)} min`],
+      ["now", status.current || "—"],
+    ];
+    stats.innerHTML = rows
+      .map(
+        ([key, value]) =>
+          `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(String(value))}</dd>`
+      )
+      .join("");
+  }
+
+  const log = $("rs-log");
+  const lines = (report && report.log_tail) || [];
+  log.textContent = lines.length ? lines.join("\n") : "No campaign log yet.";
+
+  const folds = (report && report.folds) || [];
+  const selected = currentResearchSpec();
+  const note = folds.length ? `${folds.length} quarters · ${selected || ""}` : "";
+  $("rs-quarter-note").textContent = note;
+  $("rs-cum-note").textContent = note;
+  $("rs-best").textContent = selected || "";
+
+  renderResearchLeaderboard(status, selected);
+  renderResearchCharts(folds);
+
+  const quarterVerdict = $("rs-quarter-verdict");
+  const cumVerdict = $("rs-cum-verdict");
+  if (!folds.length) {
+    quarterVerdict.textContent = "";
+    quarterVerdict.className = "chart-verdict";
+    cumVerdict.textContent = "";
+    cumVerdict.className = "chart-verdict";
+  } else {
+    const excesses = folds.map((fold) => Number(fold.excess) || 0);
+    const sorted = [...excesses].sort((a, b) => a - b);
+    const median =
+      sorted.length % 2
+        ? sorted[(sorted.length - 1) / 2]
+        : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    const wins = excesses.filter((value) => value > 0).length;
+    const worst = Math.min(...folds.map((fold) => Number(fold.return) || 0));
+    quarterVerdict.textContent =
+      `Beat holding in ${wins} of ${folds.length} quarters · ` +
+      `median excess ${fmtPct(median, 2)} · worst quarter ${fmtPct(worst, 2)}`;
+    quarterVerdict.className =
+      "chart-verdict " + (median >= 0 ? "pos" : "neg");
+
+    let strategy = 1;
+    let hold = 1;
+    for (const fold of folds) {
+      strategy *= 1 + (Number(fold.return) || 0);
+      hold *= 1 + (Number(fold.buy_hold) || 0);
+    }
+    const lead = strategy - hold;
+    cumVerdict.textContent =
+      `Strategy ${fmtPct(strategy - 1, 1)} vs holding ${fmtPct(hold - 1, 1)} — ` +
+      `${lead >= 0 ? "ahead" : "behind"} by ${fmtPct(Math.abs(lead), 1)}`;
+    cumVerdict.className = "chart-verdict " + (lead >= 0 ? "pos" : "neg");
+  }
+}
+
+function renderResearchLeaderboard(status, selected) {
+  const table = $("rs-leaderboard");
+  const rows = [...((status && status.leaderboard) || [])];
+  rows.sort((a, b) => {
+    const completeA = a.complete !== false ? 1 : 0;
+    const completeB = b.complete !== false ? 1 : 0;
+    if (completeA !== completeB) return completeB - completeA;
+    const winsA = Number(a.share_beating_hold) || 0;
+    const winsB = Number(b.share_beating_hold) || 0;
+    if (winsA !== winsB) return winsB - winsA;
+    return (Number(b.compounded) || 0) - (Number(a.compounded) || 0);
+  });
+  const note = $("rs-board-note");
+  if (note) {
+    note.textContent = rows.length
+      ? `${rows.length} settings · sorted by wins, then compounded`
+      : "";
+  }
+  if (!rows.length) {
+    table.innerHTML =
+      '<tbody><tr><td class="muted">No setting has finished all of its folds yet.</td></tr></tbody>';
+    return;
+  }
+
+  const tone = (value) => (value >= 0 ? "pos" : "neg");
+  table.innerHTML =
+    "<thead><tr><th>setting</th><th class=\"num\">folds</th>" +
+    "<th class=\"num\">median</th><th class=\"num\">excess</th>" +
+    "<th class=\"num\">worst</th><th class=\"num\">beats hold</th>" +
+    "<th class=\"num\">compounded</th></tr></thead><tbody>" +
+    rows
+      .map((row) => {
+        const isSelected = selected && row.spec === selected;
+        const complete = row.complete !== false;
+        const wanted = Number(row.expected_folds || row.folds || 0);
+        const folds =
+          wanted > Number(row.folds || 0)
+            ? `${fmtInt(row.folds)}/${fmtInt(wanted)}`
+            : fmtInt(row.folds);
+        const wins = Math.round(
+          (Number(row.share_beating_hold) || 0) * (Number(row.folds) || 0)
+        );
+        return (
+          `<tr data-spec="${escapeHtml(row.spec)}" class="${isSelected ? "selected" : ""}${complete ? "" : " partial"}">` +
+          `<td>${escapeHtml(row.spec)}${complete ? "" : ' <span class="muted small">partial</span>'}</td>` +
+          `<td class="num">${folds}</td>` +
+          `<td class="num ${tone(row.median_return)}">${shareText(row.median_return, 2)}</td>` +
+          `<td class="num ${tone(row.median_excess)}">${shareText(row.median_excess, 2)}</td>` +
+          `<td class="num neg">${shareText(row.worst_return, 2)}</td>` +
+          `<td class="num" title="${shareText(row.share_beating_hold, 1)}">${wins}/${fmtInt(row.folds)}</td>` +
+          `<td class="num ${tone(row.compounded)}">${shareText(row.compounded, 1)}</td>` +
+          "</tr>"
+        );
+      })
+      .join("") +
+    "</tbody>";
+}
+
+function svgTag(name, attrs = {}, content = "") {
+  const parts = Object.entries(attrs)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([key, value]) => `${key}="${escapeHtml(value)}"`)
+    .join(" ");
+  return `<${name}${parts ? " " + parts : ""}>${content}</${name}>`;
+}
+
+function quarterLabel(fold, index) {
+  const ms = Number(fold.test_start_ms);
+  return Number.isFinite(ms) && ms > 0 && ms < 8.64e15
+    ? new Date(ms).toISOString().slice(0, 7)
+    : `#${index + 1}`;
+}
+
+function renderResearchCharts(folds) {
+  renderQuarterChart($("rs-quarter-chart"), folds);
+  renderCumulativeChart($("rs-cum-chart"), folds);
+}
+
+function renderQuarterChart(host, folds) {
+  if (!host) return;
+  if (!folds || !folds.length) {
+    host.innerHTML =
+      '<p class="muted small">Waiting for the first setting to finish all of its folds.</p>';
+    return;
+  }
+
+  const W = Math.max(360, host.clientWidth || 720);
+  const H = 250;
+  const m = { l: 52, r: 12, t: 14, b: 34 };
+  const plotW = W - m.l - m.r;
+  const plotH = H - m.t - m.b;
+
+  const values = folds.flatMap((fold) => [
+    Number(fold.return) || 0,
+    Number(fold.buy_hold) || 0,
+  ]);
+  let lo = Math.min(0, ...values);
+  let hi = Math.max(0, ...values);
+  const pad = (hi - lo) * 0.14 || 0.01;
+  lo -= pad;
+  hi += pad;
+
+  const y = (value) => m.t + ((hi - value) / (hi - lo)) * plotH;
+  const zero = y(0);
+  const group = plotW / folds.length;
+  const bw = Math.max(3, Math.min(15, group * 0.3));
+  const parts = [];
+
+  [hi, 0, lo].forEach((value) => {
+    parts.push(
+      svgTag("line", {
+        x1: m.l,
+        x2: W - m.r,
+        y1: y(value),
+        y2: y(value),
+        stroke: "#1d2634",
+        "stroke-width": 1,
+      })
+    );
+    parts.push(
+      svgTag(
+        "text",
+        {
+          x: m.l - 8,
+          y: y(value) + 4,
+          "text-anchor": "end",
+          fill: "#7d8ca1",
+          "font-size": 11,
+        },
+        escapeHtml(`${(value * 100).toFixed(0)}%`)
+      )
+    );
+  });
+
+  const every = Math.max(1, Math.ceil(folds.length / 8));
+  folds.forEach((fold, index) => {
+    const cx = m.l + group * (index + 0.5);
+    const strategy = Number(fold.return) || 0;
+    const hold = Number(fold.buy_hold) || 0;
+    const label = quarterLabel(fold, index);
+    const tip =
+      `${label} · strategy ${fmtPct(strategy, 2)} · hold ${fmtPct(hold, 2)}` +
+      ` · excess ${fmtPct(strategy - hold, 2)}`;
+    const bar = (x, value, colour) => {
+      const top = Math.min(y(value), zero);
+      const height = Math.max(1, Math.abs(y(value) - zero));
+      return svgTag(
+        "rect",
+        { x, y: top, width: bw, height, rx: 1, fill: colour },
+        svgTag("title", {}, escapeHtml(tip))
+      );
+    };
+    parts.push(bar(cx - bw - 1, strategy, "#d9b25f"));
+    parts.push(bar(cx + 1, hold, "#5a6c85"));
+    if (index % every === 0) {
+      parts.push(
+        svgTag(
+          "text",
+          {
+            x: cx,
+            y: H - 12,
+            "text-anchor": "middle",
+            fill: "#7d8ca1",
+            "font-size": 10,
+          },
+          escapeHtml(label)
+        )
+      );
+    }
+  });
+
+  host.innerHTML = svgTag(
+    "svg",
+    {
+      viewBox: `0 0 ${W} ${H}`,
+      width: "100%",
+      height: H,
+      role: "img",
+      "aria-label": "Quarterly return, strategy versus buy and hold",
+    },
+    parts.join("")
+  );
+}
+
+function renderCumulativeChart(host, folds) {
+  if (!host) return;
+  if (!folds || !folds.length) {
+    host.innerHTML =
+      '<p class="muted small">Waiting for the first setting to finish all of its folds.</p>';
+    return;
+  }
+
+  const W = Math.max(360, host.clientWidth || 720);
+  const H = 250;
+  const m = { l: 52, r: 14, t: 14, b: 30 };
+  const plotW = W - m.l - m.r;
+  const plotH = H - m.t - m.b;
+
+  let strategy = 1;
+  let hold = 1;
+  const points = folds.map((fold) => {
+    strategy *= 1 + (Number(fold.return) || 0);
+    hold *= 1 + (Number(fold.buy_hold) || 0);
+    return { strategy, hold, fold };
+  });
+
+  const values = points.flatMap((point) => [point.strategy, point.hold]);
+  let lo = Math.min(1, ...values);
+  let hi = Math.max(1, ...values);
+  const pad = (hi - lo) * 0.1 || 0.01;
+  lo -= pad;
+  hi += pad;
+
+  const y = (value) => m.t + ((hi - value) / (hi - lo)) * plotH;
+  const x = (index) =>
+    m.l +
+    (points.length === 1 ? plotW / 2 : (plotW * index) / (points.length - 1));
+  const line = (key) =>
+    points
+      .map(
+        (point, index) =>
+          `${index === 0 ? "M" : "L"}${x(index).toFixed(1)},${y(
+            point[key]
+          ).toFixed(1)}`
+      )
+      .join(" ");
+
+  const parts = [];
+  [hi, 1, lo].forEach((value) => {
+    parts.push(
+      svgTag("line", {
+        x1: m.l,
+        x2: W - m.r,
+        y1: y(value),
+        y2: y(value),
+        stroke: "#1d2634",
+        "stroke-width": 1,
+      })
+    );
+    parts.push(
+      svgTag(
+        "text",
+        {
+          x: m.l - 8,
+          y: y(value) + 4,
+          "text-anchor": "end",
+          fill: "#7d8ca1",
+          "font-size": 11,
+        },
+        escapeHtml(`${((value - 1) * 100).toFixed(0)}%`)
+      )
+    );
+  });
+
+  parts.push(
+    svgTag("path", {
+      d: line("strategy"),
+      fill: "none",
+      stroke: "#d9b25f",
+      "stroke-width": 2,
+    })
+  );
+  parts.push(
+    svgTag("path", {
+      d: line("hold"),
+      fill: "none",
+      stroke: "#5a6c85",
+      "stroke-width": 1.5,
+      "stroke-dasharray": "4 4",
+    })
+  );
+
+  points.forEach((point, index) => {
+    parts.push(
+      svgTag(
+        "circle",
+        { cx: x(index), cy: y(point.strategy), r: 3, fill: "#d9b25f" },
+        svgTag(
+          "title",
+          {},
+          escapeHtml(
+            `${quarterLabel(point.fold, index)} · strategy ${fmtPct(
+              point.strategy - 1,
+              1
+            )} · hold ${fmtPct(point.hold - 1, 1)}`
+          )
+        )
+      )
+    );
+  });
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  parts.push(
+    svgTag(
+      "text",
+      { x: m.l, y: H - 8, "text-anchor": "start", fill: "#7d8ca1", "font-size": 10 },
+      escapeHtml(quarterLabel(first.fold, 0))
+    )
+  );
+  parts.push(
+    svgTag(
+      "text",
+      { x: W - m.r, y: H - 8, "text-anchor": "end", fill: "#7d8ca1", "font-size": 10 },
+      escapeHtml(quarterLabel(last.fold, points.length - 1))
+    )
+  );
+  parts.push(
+    svgTag(
+      "text",
+      {
+        x: W - m.r,
+        y: y(last.strategy) - 6,
+        "text-anchor": "end",
+        fill: "#d9b25f",
+        "font-size": 11,
+      },
+      escapeHtml(fmtPct(last.strategy - 1, 1))
+    )
+  );
+  parts.push(
+    svgTag(
+      "text",
+      {
+        x: W - m.r,
+        y: y(last.hold) + 12,
+        "text-anchor": "end",
+        fill: "#5a6c85",
+        "font-size": 11,
+      },
+      escapeHtml(fmtPct(last.hold - 1, 1))
+    )
+  );
+
+  host.innerHTML = svgTag(
+    "svg",
+    {
+      viewBox: `0 0 ${W} ${H}`,
+      width: "100%",
+      height: H,
+      role: "img",
+      "aria-label": "Cumulative return, strategy versus buy and hold",
+    },
+    parts.join("")
+  );
+}
+
 /* ----------------------------------------------------------------- events */
 function datasetParams() {
   const params = {
@@ -1554,6 +2189,11 @@ function datasetParams() {
 
 function bindEvents() {
   $("tabs").addEventListener("click", (event) => {
+    const group = event.target.closest("button[data-group]");
+    if (group) {
+      switchGroup(group.dataset.group);
+      return;
+    }
     const button = event.target.closest("button[data-panel]");
     if (button) switchPanel(button.dataset.panel);
   });
@@ -1602,7 +2242,7 @@ function bindEvents() {
   });
 
   $("next-step-action").addEventListener("click", () => {
-    if (state.nextPanel) switchPanel(state.nextPanel);
+    if (state.nextPanel) openPanel(state.nextPanel);
   });
 
   $("dismiss-intro").addEventListener("click", () => {
@@ -1669,6 +2309,61 @@ function bindEvents() {
     } catch (error) {
       if (error.message !== "unauthorised") toast(error.message, "error");
     }
+  });
+
+  $("rs-start").addEventListener("click", async () => {
+    const params = rsParams();
+    if (
+      !params.k_up.length ||
+      !params.k_down.length ||
+      !params.holding.length ||
+      !params.window.length ||
+      !params.seeds.length
+    ) {
+      toast("each grid needs at least one value", "error");
+      return;
+    }
+    try {
+      await api("/api/research/start", { method: "POST", body: params });
+      state.researchSpec = null;
+      state.research = null;
+      toast(
+        "campaign started — it keeps running if you close this tab",
+        "ok",
+        7000
+      );
+      await refreshResearch();
+    } catch (error) {
+      if (error.message !== "unauthorised") toast(error.message, "error", 9000);
+    }
+  });
+
+  $("rs-stop").addEventListener("click", async () => {
+    try {
+      await api("/api/research/stop", { method: "POST", body: {} });
+      toast(
+        "stop requested — the fold in flight will finish and save",
+        "info",
+        7000
+      );
+      await refreshResearch();
+    } catch (error) {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    }
+  });
+
+  $("rs-leaderboard").addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-spec]");
+    if (!row) return;
+    state.researchSpec = row.dataset.spec;
+    refreshResearch(state.researchSpec).catch((error) => {
+      if (error.message !== "unauthorised") toast(error.message, "error");
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    if (!$("panel-research").classList.contains("active")) return;
+    renderResearchCharts((state.research && state.research.folds) || []);
   });
 
   $("start-training").addEventListener("click", async () => {

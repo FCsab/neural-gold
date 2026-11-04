@@ -22,7 +22,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -34,7 +34,7 @@ from ..config import AppConfig, ConfigError, FeatureConfig, LabelConfig
 from ..data.store import store_from_config
 from ..exchange.rest import interval_to_ms
 from ..registry import registry_from_config
-from . import reports, tasks
+from . import reports, research, tasks
 from .jobs import JobManager
 from .security import ip_allowed, make_auth_dependency, token_matches
 
@@ -89,6 +89,51 @@ class WalkforwardParams(BaseModel):
     # "signal": trade the barrier signal. "hold": stay long unless the model
     # says stop, which is the direct test against buy-and-hold.
     policy: Literal["signal", "hold"] = "signal"
+
+
+# Item-level bounds for the campaign grids. A typo like a negative ATR
+# multiple should fail at the request, not after the first fold trains.
+PositiveFloat = Annotated[float, Field(gt=0, le=50)]
+PositiveInt = Annotated[int, Field(ge=2, le=10_000)]
+SeedInt = Annotated[int, Field(ge=0, le=1_000_000)]
+ThresholdFloat = Annotated[float, Field(ge=0, le=1)]
+
+
+class ResearchParams(BaseModel):
+    """The detached, multi-hour campaign, not one server job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    interval: str = Field(default="4h", pattern=r"^[0-9]+[mhd]$")
+    policy: Literal["signal", "hold"] = "hold"
+    k_up: list[PositiveFloat] = Field(
+        default=[2.5, 3.0, 3.5, 4.0], min_length=1, max_length=24
+    )
+    k_down: list[PositiveFloat] = Field(
+        default=[2.0, 2.5, 3.0, 4.0], min_length=1, max_length=24
+    )
+    holding: list[PositiveInt] = Field(
+        default=[192, 288], min_length=1, max_length=24
+    )
+    window: list[PositiveInt] = Field(
+        default=[32, 64, 128], min_length=1, max_length=24
+    )
+    seeds: list[SeedInt] = Field(default=[7], min_length=1, max_length=24)
+    epochs: int = Field(default=15, ge=1, le=500)
+    minutes_per_fold: float = Field(default=3.0, gt=0, le=120)
+    test_days: int = Field(default=90, ge=1, le=365)
+    val_days: int = Field(default=90, ge=1, le=365)
+    min_train_days: int = Field(default=365, ge=1, le=3000)
+    fee_bps: float = Field(default=10.0, ge=0, le=100)
+    slippage_bps: float = Field(default=2.0, ge=0, le=100)
+    device: Literal["auto", "cpu"] = "auto"
+    stop_thresholds: list[ThresholdFloat] = Field(
+        default=[0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 1.0],
+        min_length=1,
+        max_length=24,
+    )
+    reentry_margin: float = Field(default=0.05, ge=0.0, le=0.5)
+    min_flat_bars: int = Field(default=1, ge=0, le=100)
 
 
 class SearchParams(BaseModel):
@@ -458,6 +503,32 @@ def create_app(
             return json.loads(path.read_text())
         except json.JSONDecodeError:
             raise HTTPException(status_code=409, detail="report is being written") from None
+
+    # -- detached research campaign ---------------------------------------
+    @app.post("/api/research/start")
+    def post_research(
+        params: ResearchParams, _: None = Depends(auth)
+    ) -> dict[str, Any]:
+        try:
+            return research.start_campaign(config, params.model_dump())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"could not start the campaign: {exc}"
+            ) from None
+
+    @app.get("/api/research/status")
+    def research_status(
+        spec: str | None = Query(default=None, max_length=80),
+        folds: bool = Query(default=True),
+        _: None = Depends(auth),
+    ) -> dict[str, Any]:
+        return research.campaign_status(config, spec=spec, include_folds=folds)
+
+    @app.post("/api/research/stop")
+    def research_stop(_: None = Depends(auth)) -> dict[str, Any]:
+        return research.stop_campaign(config)
 
     # -- automated search -------------------------------------------------
     @app.post("/api/search/start")
