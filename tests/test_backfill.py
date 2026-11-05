@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from gold_neural.data.backfill import plan_missing_range, plan_missing_windows
-from gold_neural.data.store import Coverage
+from crypto_neural.data.backfill import plan_missing_range, plan_missing_windows
+from crypto_neural.data.store import Coverage
+
+from .conftest import synthetic_bars
 
 INTERVAL = 300_000
 DAY = 86_400_000
@@ -60,3 +62,18 @@ def test_windows_start_on_the_bar_grid():
     coverage = Coverage(NOW - year_ms(1.0), NOW - INTERVAL, 100_000)
     for start, _end in plan_missing_windows(coverage, INTERVAL, years=4.0, now_ms=NOW):
         assert start % INTERVAL == 0
+
+
+def test_top_up_never_turns_into_a_full_backfill(tmp_path):
+    """A reading's top-up fetches only the tail; an empty or months-old store
+    is left for the explicit download button (and no network is touched)."""
+    import asyncio
+    from dataclasses import replace
+
+    from crypto_neural.config import AppConfig, DataConfig
+    from crypto_neural.data import store_from_config, top_up
+
+    config = replace(AppConfig(), data=DataConfig(root=str(tmp_path)))
+    assert asyncio.run(top_up(config)) is None  # empty store
+    store_from_config(config).write_bars(synthetic_bars(100))  # bars from 2023
+    assert asyncio.run(top_up(config)) is None

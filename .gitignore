@@ -9,7 +9,7 @@ venv/
 .ruff_cache/
 
 # Data and state (regenerated, never committed). Root-anchored: a bare
-# 'data/' would also swallow the gold_neural/data package.
+# 'data/' would also swallow the crypto_neural/data package.
 /data/
 *.parquet
 *.sqlite

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Smoke-test a running gold-neural server.
+"""Smoke-test a running crypto-neural server.
 
-    GOLDNEURAL_API_TOKEN=... python scripts/smoke.py --url https://host:8443 --insecure
+    python scripts/smoke.py --url https://host:8443 --insecure
 
-Checks the page, the auth gate, the read endpoints, and (with ``--leakage``)
+Checks the page, the read endpoints, and (with ``--leakage``)
 runs the leakage suite through the job API. Exits non-zero on the first
 failure, so it works as a post-deploy gate.
 """
@@ -39,34 +39,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--url",
-        default=os.environ.get("GOLDNEURAL_URL", "https://127.0.0.1:8443"),
+        default=os.environ.get("CRYPTONEURAL_URL", "https://127.0.0.1:8443"),
     )
-    parser.add_argument("--token", default=os.environ.get("GOLDNEURAL_API_TOKEN", ""))
     parser.add_argument("--insecure", action="store_true", help="skip TLS verification")
     parser.add_argument("--leakage", action="store_true", help="run the leakage suite too")
     parser.add_argument("--samples", type=int, default=3)
     args = parser.parse_args(argv)
 
-    if not args.token:
-        raise SystemExit("no token: pass --token or set GOLDNEURAL_API_TOKEN")
-
-    headers = {"Authorization": f"Bearer {args.token}"}
-    print(f"gold-neural smoke test -> {args.url}")
+    headers: dict[str, str] = {}
+    print(f"crypto-neural smoke test -> {args.url}")
 
     with httpx.Client(
         base_url=args.url, verify=not args.insecure, timeout=30.0
     ) as client:
         page = client.get("/")
-        check("UI page served", page.status_code == 200 and "gold-neural" in page.text)
+        check("UI page served", page.status_code == 200 and "crypto-neural" in page.text)
 
         assets = client.get("/assets/app.js")
-        check("UI javascript served", assets.status_code == 200 and "gold-neural" in assets.text)
-
-        anonymous = client.get("/api/status")
-        check("API rejects anonymous requests", anonymous.status_code == 401)
+        check("UI javascript served", assets.status_code == 200 and "crypto-neural" in assets.text)
 
         status = client.get("/api/status", headers=headers).json()
-        check("status reports the symbol", status["symbol"] == "PAXGUSDT", str(status)[:200])
+        check("status reports the symbol", status["symbol"] == "BTCUSDC", str(status)[:200])
         check("TLS is on", status["tls"] is True)
 
         info = client.get("/api/data/info", headers=headers).json()

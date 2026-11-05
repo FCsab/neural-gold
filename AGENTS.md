@@ -4,9 +4,22 @@ Guidance for coding agents working in this repository.
 
 ## What this is
 
-PAXG/USDT neural trading system on Binance spot. Long-only, triple-barrier
-labels, 5-minute bars by default, one FastAPI HTTPS server that serves both a
-JSON API and a no-build-step web UI.
+BTC/USDC trading research system on Binance spot. Long-only. Two models: a
+crash-risk model (`risk.py`: MLP + LightGBM ensemble, 4h bars, learned from
+BTC/USDT history) and the original triple-barrier transformer (5-minute
+bars). One FastAPI HTTPS server serves
+both a JSON API and a no-build-step web UI.
+
+The symbol is BTC/USDC (PAXG is not available to the owner, in Hungary).
+Read `docs/risk.md` before proposing model work: on PAXG, direction was
+measured as unpredictable, a neural network lost to gradient-boosted trees,
+and the drawdown signal was fragile. A sweep over more label settings is not
+new work. On BTC the same held: direction unpredictable, short-horizon crash
+risk predictable (AUC 0.65), an MLP equal to LightGBM and their average
+better, and still no exit or sizing rule beat holding. BTCUSDC has a 164-day
+listing gap (2022-09 → 2023-03), so the risk model learns from BTCUSDT
+(`risk.data_symbol`). The risk job imports PyTorch only in a child process;
+keep it out of the server process.
 
 **Current scope: step 1 (data layer) is complete; step 2 is partial** — one
 model trains end to end and a registry records it. There is no execution
@@ -23,50 +36,53 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # training only
 .venv/bin/python run.py                    # HTTP UI + API on https://<lan-ip>:8443/
-.venv/bin/pytest                           # 137 tests, no network
+.venv/bin/pytest                           # 161 tests, no network
 ```
 
 Headless equivalents (use these in CI, cron, and agent verification):
 
 ```bash
-.venv/bin/python -m gold_neural.cli backfill --years 2 --gaps
-.venv/bin/python -m gold_neural.cli info
-.venv/bin/python -m gold_neural.cli dataset --out data/dataset.parquet
-.venv/bin/python -m gold_neural.cli leakage --out data/leakage-report.json
+.venv/bin/python -m crypto_neural.cli backfill --years 2 --gaps
+.venv/bin/python -m crypto_neural.cli info
+.venv/bin/python -m crypto_neural.cli dataset --out data/dataset.parquet
+.venv/bin/python -m crypto_neural.cli leakage --out data/leakage-report.json
+.venv/bin/python -m crypto_neural.cli risk   # needs 4h bars; logs the next-bar reading
+.venv/bin/python -m crypto_neural.cli paper  # score the predictions log
+.venv/bin/python -m crypto_neural.cli funding  # pre-registered funding test; run once
 .venv/bin/python scripts/smoke.py          # against a running server
 ```
 
 `leakage` exits non-zero on any failure; that is the build gate, not a warning.
-The console script `gold-neural` maps to the same CLI.
+The console script `crypto-neural` maps to the same CLI.
 
 `run.py` is the only entrypoint needed for the UI: first boot generates a
-self-signed cert in `certs/` and a bearer token in `.token` (mode 0600), prints
-both, and serves the page. `--no-tls`, `--host`, `--port` exist for bootstrap
+self-signed cert in `certs/` and serves the page. There is no login. `--no-tls`, `--host`, `--port` exist for bootstrap
 and tests.
 
 ## Map of the code
 
 ```
-run.py                 TLS bootstrap, token, uvicorn
-gold_neural/
+run.py                 TLS bootstrap, uvicorn
+crypto_neural/
   config.py            frozen dataclasses; strict key checking; env overrides
   exchange/rest.py     async Binance REST (klines, exchangeInfo filters)
   data/store.py        Parquet partitions by year/month + SQLite range index
   data/backfill.py     pagination, resume, bar verification
   indicators.py        causal ATR / RSI / EMA / z-score
   features.py          feature frame + the feature_lag contract
-  labels.py            vectorised triple barrier
+  labels.py            vectorised triple barrier; drawdown label
   dataset.py           feature/label merge, walk-forward split
   leakage.py           the mandatory leakage suite
   model.py             window transformer + real GPU probe
   training.py          child-process training loop: budget, stop, metrics
   backtest.py          trade simulation with fees and slippage
-  hold_policy.py       long-by-default policy (the buy-and-hold comparison)
-  search.py            candidate grid, cost pruning, validation scoring
-  walkforward.py       rolling 90-day blocks, expanding window
+  risk.py              drawdown-risk walk-forward: purged folds, past-only
+                       rule choice, placebo, baselines, next-bar reading
+  predictions.py       predictions log (first reading per bar wins) and the
+                       paper record scored from it; never places orders
   registry.py          SQLite models + training_runs
   cli.py               headless backfill / dataset / labels / leakage
-  server/              FastAPI app, job queue, auth, TLS, reports, detached research
+  server/              FastAPI app, job queue, IP allowlist, TLS, reports, reading scheduler
 web/                   one page, plain ES2020, vendored chart library
 tests/                 synthetic fixtures only, no network
 ```
@@ -101,9 +117,19 @@ marked invalid; never defaulted to class `0` / "timeout".
 `slippage_bps`. If the profit target is smaller than the round-trip cost, no
 model can win — say so plainly instead of reporting the percentage.
 
-**Selection happens on validation.** `search.py` scores candidates on
-validation and reports the winner's test result as out-of-sample. Choosing on
-test would manufacture the number.
+**Selection never uses the block being reported.** `risk.py` chooses each
+block's exit rule from the earlier blocks only, and the transformer's early
+stopping uses validation. Choosing on test would manufacture the number; so
+would changing `RiskConfig` defaults after seeing results.
+
+**Purge overlapping labels.** A label is decided by prices up to its exit.
+Training rows whose exit falls inside the next block are dropped
+(`training.purge_overlap`, `risk.risk_folds`). Do not remove the purge.
+
+**The predictions log is append-only and first-wins.** A reading is keyed by
+its bar and the risk-settings fingerprint; never update, delete, or let a
+rerun replace one, and never fill a late reading at its own bar's open.
+That log is the paper side of the gate.
 
 **One writer, one job at a time.** Backfill, dataset builds, and leakage share
 one Parquet store and one SQLite writer. Jobs are serialised by design. Only
@@ -119,7 +145,7 @@ those values, and any future execution layer must re-fetch hourly.
 - Python 3.11+, `from __future__ import annotations` at the top of each module,
   full type hints on public functions.
 - Config is a graph of frozen dataclasses built by `config.load_config`.
-  Precedence: dataclass defaults < `config.yaml` < `GOLDNEURAL_<SECTION>_<KEY>`.
+  Precedence: dataclass defaults < `config.yaml` < `CRYPTONEURAL_<SECTION>_<KEY>`.
   Unknown keys raise `ConfigError` on purpose — a typo like `k_up: 20` instead
   of `2.0` must fail loudly, not silently change what the model predicts.
   Tuple-typed fields stay tuples (hashability and equality depend on it).
@@ -156,10 +182,11 @@ those values, and any future execution layer must re-fetch hourly.
 
 ## Security and secrets
 
-- Every `/api` route is behind the bearer token; the static page is not (it
-  holds no data). OpenAPI/docs stay disabled.
-- Token comes from `GOLDNEURAL_API_TOKEN` or `.token` (0600) — never from
-  `config.yaml`, SQLite, or source. Certificates live in `certs/`.
+- There is no API token, by the owner's choice: the server runs on their own
+  machine. The only gate is the optional `server.allowed_ips` allowlist
+  (empty = any source). The server binds `0.0.0.0`, so anyone on the LAN can
+  reach it; that is acceptable only because nothing here can move money.
+  OpenAPI/docs stay disabled. Certificates live in `certs/`.
 - `.gitignore` already excludes `data/`, `certs/`, `.token`, `*.pt`, `*.parquet`,
   `*.sqlite*`. Do not add tracked fixtures there, and do not "helpfully" commit
   a generated report.
@@ -183,7 +210,7 @@ those values, and any future execution layer must re-fetch hourly.
 2. If you touched features, labels, dataset, or leakage: `cli leakage` reports
    PASS and exits 0.
 3. If you touched the server or the UI: `scripts/smoke.py` against a running
-   `run.py` reports 12/12, or you state which check you could not run and why.
+   `run.py` reports 11/11, or you state which check you could not run and why.
 4. Metrics are reported as measured, including the baseline they are compared
    against. A model that loses to "always guess the majority class" is recorded
    as `draft`, not promoted.

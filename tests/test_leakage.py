@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gold_neural.config import FeatureConfig, LabelConfig
-from gold_neural.leakage import (
+from crypto_neural.config import FeatureConfig, LabelConfig
+from crypto_neural.leakage import (
     LeakageError,
     assert_no_leakage,
     check_dataset_invariants,
@@ -26,7 +26,7 @@ def test_suite_passes_on_clean_pipeline(bars):
 
 
 def test_prefix_check_catches_a_leaked_feature(bars, monkeypatch):
-    import gold_neural.leakage as leakage
+    import crypto_neural.leakage as leakage
 
     real_builder = leakage.build_features
 
@@ -42,7 +42,7 @@ def test_prefix_check_catches_a_leaked_feature(bars, monkeypatch):
 
 
 def test_assert_no_leakage_raises_when_a_check_fails(bars, monkeypatch):
-    import gold_neural.leakage as leakage
+    import crypto_neural.leakage as leakage
 
     def broken(_bars, _features_cfg, samples=10):
         return leakage.Check(name="features_prefix_invariant", passed=False, detail="boom")
@@ -53,8 +53,8 @@ def test_assert_no_leakage_raises_when_a_check_fails(bars, monkeypatch):
 
 
 def test_shuffled_label_check_is_a_harness_test(bars):
-    from gold_neural.dataset import build_dataset
-    from gold_neural.leakage import check_shuffled_labels
+    from crypto_neural.dataset import build_dataset
+    from crypto_neural.leakage import check_shuffled_labels
 
     ds = build_dataset(bars, FeatureConfig(), LabelConfig())
     check = check_shuffled_labels(ds)
@@ -63,14 +63,14 @@ def test_shuffled_label_check_is_a_harness_test(bars):
 
 
 def test_dataset_invariants_detect_misalignment(bars):
-    from gold_neural.dataset import build_dataset
+    from crypto_neural.dataset import build_dataset
 
     ds = build_dataset(bars, FeatureConfig(), LabelConfig())
     assert check_dataset_invariants(ds, LabelConfig().max_holding_bars).passed
 
     broken = ds.frame.copy()
     broken.loc[broken.index[10], "exit_time"] = broken.loc[broken.index[10], "open_time"]
-    from gold_neural.dataset import Dataset
+    from crypto_neural.dataset import Dataset
 
     check = check_dataset_invariants(
         Dataset(broken, ds.feature_columns), LabelConfig().max_holding_bars

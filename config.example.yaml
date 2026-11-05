@@ -1,10 +1,10 @@
 # Copy to config.yaml and edit. Every value can be overridden by an
-# environment variable of the form GOLDNEURAL_<SECTION>_<KEY> (uppercased),
-# e.g. GOLDNEURAL_EXCHANGE_SYMBOL=PAXGUSDT.
+# environment variable of the form CRYPTONEURAL_<SECTION>_<KEY> (uppercased),
+# e.g. CRYPTONEURAL_EXCHANGE_SYMBOL=BTCUSDC.
 
 exchange:
   base_url: "https://api.binance.com"
-  symbol: "PAXGUSDT"
+  symbol: "BTCUSDC"
   interval: "5m"
   request_timeout_s: 20.0
   max_retries: 5
@@ -47,10 +47,11 @@ server:
   tls_enabled: true
   cert_path: "certs/server.crt"
   key_path: "certs/server.key"
-  # Bearer token: read from this env var, else from token_file (created
-  # with mode 0600 on first boot). Never stored in config or SQLite.
-  token_env: "GOLDNEURAL_API_TOKEN"
-  token_file: ".token"
   # Empty = accept any source. Otherwise list IPs or CIDR blocks, e.g.
   # ["192.168.1.0/24", "127.0.0.1"].
   allowed_ips: []
+  # Run the risk job just after every 4h bar opens and add its reading to
+  # the predictions log (data/predictions.sqlite). Readings made later than
+  # ten minutes after their bar opens are booked at the next bar, so without
+  # this the paper record is mostly late. A few CPU-minutes per bar.
+  record_readings: false

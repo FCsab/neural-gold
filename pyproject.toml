@@ -1,7 +1,7 @@
 [project]
-name = "gold-neural"
+name = "crypto-neural"
 version = "0.1.0"
-description = "PAXG/USDT neural trading system — data layer + web workbench"
+description = "BTC/USDC neural trading system — data layer + web workbench"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
@@ -11,6 +11,8 @@ dependencies = [
     "PyYAML>=6.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # The risk model. Small wheel, CPU only; trains in seconds.
+    "lightgbm>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -22,14 +24,14 @@ dev = ["pytest>=8.0"]
 train = ["torch>=2.4"]
 
 [project.scripts]
-gold-neural = "gold_neural.cli:main"
+crypto-neural = "crypto_neural.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["gold_neural*"]
+include = ["crypto_neural*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,5 +1,9 @@
 # Data layer report
 
+> **Measured on PAXG/USDT**, before the project switched to BTC/USDC on
+> 2026-11-04 (PAXG is not available in Hungary). The method still applies;
+> the numbers are PAXG's and have not been re-measured on BTC.
+
 Result of the step-1 verification run against live Binance spot data on
 2026-10-31. Regenerate everything with the commands in `README.md`; the
 artifacts themselves (`data/`) are git-ignored.

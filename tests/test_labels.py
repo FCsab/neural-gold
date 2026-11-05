@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from gold_neural.config import LabelConfig
-from gold_neural.labels import label_distribution, label_triple_barrier
+from crypto_neural.config import LabelConfig
+from crypto_neural.labels import label_distribution, label_triple_barrier
 
 from .conftest import flat_bars
 
@@ -117,3 +117,40 @@ def test_empty_when_history_shorter_than_horizon():
     labels = label_triple_barrier(bars, CFG)
     assert labels.empty
     assert list(labels.columns)[0] == "open_time"
+
+
+# -- drawdown label (risk model) ------------------------------------------
+def test_drawdown_label_uses_the_lowest_low_inside_the_horizon():
+    from crypto_neural.labels import label_drawdown
+
+    bars = flat_bars([100.0] * 8, wick=0.0)
+    bars.loc[3, "low"] = 91.0  # a 9% intrabar fall at bar 3
+
+    labels = label_drawdown(bars, drawdown=0.08, horizon_bars=3)
+
+    # Bars 0, 1 and 2 have bar 3 inside their next three bars; bar 3 itself
+    # looks at 4..6 and does not.
+    assert labels["label"].iloc[:4].tolist() == [1, 1, 1, 0]
+    assert labels["exit_index"].iloc[0] == 3
+
+
+def test_drawdown_label_leaves_incomplete_rows_unlabelled():
+    from crypto_neural.labels import label_drawdown
+
+    labels = label_drawdown(flat_bars([100.0] * 6, wick=0.0), 0.05, 3)
+
+    assert labels["valid"].tolist() == [True, True, True, False, False, False]
+    assert labels["label"].iloc[3:].isna().all()  # never a fabricated 0
+
+
+def test_drawdown_label_only_depends_on_its_own_window():
+    """Truncating history after t+H must not change the label at t."""
+    from crypto_neural.labels import label_drawdown
+
+    from .conftest import synthetic_bars
+
+    bars = synthetic_bars(n=600)
+    full = label_drawdown(bars, 0.005, 24)
+    for index in (0, 100, 400, 575):
+        cut = label_drawdown(bars.iloc[: index + 25].reset_index(drop=True), 0.005, 24)
+        assert cut["label"].iloc[index] == full["label"].iloc[index]

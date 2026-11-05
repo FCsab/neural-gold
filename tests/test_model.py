@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from gold_neural.model import WindowTransformer, probe_device
+from crypto_neural.model import WindowTransformer, probe_device
 
 
 def test_forward_shape_and_logits():

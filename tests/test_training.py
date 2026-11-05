@@ -6,9 +6,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from gold_neural.config import FeatureConfig, LabelConfig
-from gold_neural.dataset import build_dataset
-from gold_neural.training import TrainConfig, train_model
+from crypto_neural.config import FeatureConfig, LabelConfig
+from crypto_neural.dataset import build_dataset
+from crypto_neural.training import TrainConfig, train_model
 
 from .conftest import synthetic_bars
 
@@ -107,6 +107,9 @@ def test_history_records_every_epoch(prepared, tmp_path):
     assert [int(item["epoch"]) for item in seen] == [1, 2, 3]
     assert all("val_loss" in item and "train_loss" in item for item in seen)
     assert seen[-1]["elapsed_s"] >= seen[0]["elapsed_s"]
+    # The live chart plots these against each other every epoch.
+    assert all(0.0 <= item["val_balanced_accuracy"] <= 1.0 for item in seen)
+    assert all(0.0 < item["baseline_balanced_accuracy"] <= 1.0 for item in seen)
 
 
 def test_invalid_window_rejected():
@@ -123,7 +126,7 @@ def test_balanced_baseline_matches_a_constant_guess():
     """A constant predictor scores 1/3 on balanced accuracy, not 50%."""
     import numpy as np
 
-    from gold_neural.training import _metrics
+    from crypto_neural.training import _metrics
 
     y_true = np.array([-1] * 50 + [0] * 30 + [1] * 20)
     y_pred = np.full(100, -1)
@@ -186,7 +189,7 @@ def test_learning_rate_warms_up_then_decays(prepared, tmp_path):
 def test_purge_drops_rows_whose_label_resolves_in_the_next_block():
     import numpy as np
 
-    from gold_neural.training import purge_overlap
+    from crypto_neural.training import purge_overlap
 
     bars = synthetic_bars(n=1500)
     frame = build_dataset(
@@ -207,3 +210,19 @@ def test_purge_drops_rows_whose_label_resolves_in_the_next_block():
     assert purged["train"] > 0 and purged["validation"] > 0
     assert kept_train[0] == train[0] and kept_val[0] == val[0]
     assert purged["train"] <= 48 and purged["validation"] <= 48
+
+
+def test_live_balanced_accuracy_agrees_with_the_final_metrics():
+    import numpy as np
+
+    from crypto_neural.training import _metrics, balanced_accuracy
+
+    rng = np.random.default_rng(3)
+    y_true = rng.choice([-1, 0, 1], size=300, p=[0.5, 0.3, 0.2])
+    y_pred = rng.choice([-1, 0, 1], size=300)
+    live, guess = balanced_accuracy(y_true, y_pred)
+    final = _metrics(y_true, y_pred, np.zeros(300))
+    assert round(live, 4) == final["balanced_accuracy"]
+    assert round(guess, 4) == final["baseline_balanced_accuracy"]
+    # Only the classes present count towards the guess.
+    assert balanced_accuracy(np.array([1, 1, -1]), np.array([1, 1, 1]))[1] == 0.5

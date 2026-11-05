@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gold_neural.config import FeatureConfig, LabelConfig
-from gold_neural.dataset import build_dataset, walk_forward_split
-from gold_neural.features import build_features
+from crypto_neural.config import FeatureConfig, LabelConfig
+from crypto_neural.dataset import build_dataset, walk_forward_split
+from crypto_neural.features import build_features
 
 
 def test_dataset_basics(bars):

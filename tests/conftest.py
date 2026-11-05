@@ -67,3 +67,30 @@ def flat_bars(closes: list[float], wick: float = 1.0) -> pd.DataFrame:
 @pytest.fixture()
 def bars() -> pd.DataFrame:
     return synthetic_bars()
+
+
+def small_risk_config(**overrides):
+    """A risk config sized for ``synthetic_bars(3000)``: several test blocks."""
+    from crypto_neural.config import RiskConfig
+
+    settings = dict(
+        data_symbol="BTCUSDC",
+        model="lgbm",
+        interval="5m",
+        drawdown=0.01,
+        horizon_bars=48,
+        momentum_windows=(12, 48),
+        momentum_z_windows=(48,),
+        sma_windows=(48, 96),
+        drawdown_windows=(48,),
+        rvol_windows=(12, 96),
+        test_bars=300,
+        min_train_bars=900,
+        exit_quantiles=(0.8, 0.9),
+        min_flat_bars=5,
+        warmup_folds=1,
+        seeds=1,
+        trend_sma_bars=200,
+    )
+    settings.update(overrides)
+    return RiskConfig(**settings)

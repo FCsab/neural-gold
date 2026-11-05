@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>gold-neural · PAXG/USDT research workbench</title>
+<title>crypto-neural · BTC/USDC</title>
 <link rel="stylesheet" href="/assets/styles.css" />
 <script src="/assets/vendor/lightweight-charts.standalone.production.js" defer></script>
 <script src="/assets/app.js" defer></script>
@@ -12,631 +12,211 @@
 <body>
 
 <div id="login" class="login hidden">
-  <form class="login-card" id="login-form">
-    <h1>gold-neural</h1>
-    <p class="muted">
-      Paste the access token printed by <code>python run.py</code>, or the value
-      of <code>GOLDNEURAL_API_TOKEN</code>.
-    </p>
-    <input id="login-token" type="password" placeholder="access token"
-           autocomplete="off" spellcheck="false" required />
-    <button type="submit" class="primary">Unlock</button>
+  <div class="login-card">
+    <h1>crypto-neural</h1>
     <p class="error" id="login-error"></p>
-    <p class="muted small">This page can only be reached from your own machine or LAN.</p>
-  </form>
+    <p class="muted">Add this address to <code>server.allowed_ips</code> in
+      <code>config.yaml</code>, or empty that list, then reload.</p>
+  </div>
 </div>
 
-<header class="topbar">
-  <div class="brand"><span class="pulse"></span> gold-neural <span class="muted small" id="version"></span></div>
-  <div class="chips" id="status-chips"></div>
-  <button class="ghost" id="logout" title="forget the token in this browser">lock</button>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true"></span>crypto-neural</div>
+  <nav id="nav">
+    <button data-view="overview" class="active">Overview</button>
+    <button data-view="train">Train</button>
+    <button data-view="risk">Risk model</button>
+    <button data-view="activity">Activity <span class="count hidden" id="job-count"></span></button>
+  </nav>
+  <span class="status" id="status"><i class="dot"></i><span id="status-text">connecting…</span></span>
 </header>
 
-<div class="nextstep" id="next-step" hidden>
-  <span class="nextstep-label">Next step</span>
-  <span class="nextstep-text" id="next-step-text"></span>
-  <button class="primary small" id="next-step-action">Go</button>
+<div class="jobbar hidden" id="jobbar">
+  <span class="jobbar-text" id="jobbar-text"></span>
+  <div class="bar"><div id="jobbar-fill"></div></div>
+  <button class="small" id="jobbar-stop">Stop</button>
 </div>
-
-<div class="jobstrip idle" id="jobstrip">
-  <span class="jobstrip-kind">idle</span>
-  <span class="jobstrip-msg">Nothing is running. Anything you start shows up here.</span>
-  <div class="bar"><div class="bar-fill" id="jobstrip-bar"></div></div>
-</div>
-
-<nav class="tabs" id="tabs">
-  <button data-group="data"><span class="tab-num">1</span>Data<span class="tab-dot" data-group-dot="data"></span></button>
-  <button data-group="model"><span class="tab-num">2</span>Model<span class="tab-dot" data-group-dot="model"></span></button>
-  <button data-group="backtest"><span class="tab-num">3</span>Backtest<span class="tab-dot" data-group-dot="backtest"></span></button>
-  <span class="tabs-gap"></span>
-  <button data-panel="console" class="tab-secondary">Activity<span class="badge hidden" id="job-badge">0</span></button>
-</nav>
 
 <main>
 
-<!-- ---------------------------------------------------------------- intro -->
-<div class="card intro" id="intro" hidden>
-  <div class="card-head">
-    <h2>What this is</h2>
-    <button class="ghost small" id="dismiss-intro">got it, hide this</button>
-  </div>
-  <p>
-    A research workbench for a <strong>PAXG/USDT</strong> trading model.
-    It downloads price history, turns it into labelled examples, checks that
-    nothing leaks future information, and trains a small neural network.
-    <strong>It cannot place orders.</strong> There is no exchange key anywhere in it.
-  </p>
-  <ol class="intro-steps">
-    <li><strong>Market data</strong> — pull historical candles from Binance.</li>
-    <li><strong>Labels &amp; dataset</strong> — for each bar, work out what happened next: profit target, stop loss, or neither.</li>
-    <li><strong>Look-ahead check</strong> — prove the features cannot see the future. If this fails, do not train.</li>
-    <li><strong>Training</strong> — fit a model and read honest test metrics.</li>
-  </ol>
-  <p class="muted small">
-    The strip above the tabs always tells you the next thing to do. Nothing is
-    destructive: bars and datasets can be rebuilt at any time.
-  </p>
-</div>
-
-<!-- ----------------------------------------------------------------- data -->
-<section class="panel active" id="panel-data">
-  <p class="panel-intro">
-    Historical candles from Binance spot. Everything downstream is built from
-    these bars, so this is step one.
-  </p>
-
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head">
-        <h2>Price</h2>
-        <div class="controls">
-          <div class="seg" id="range-seg">
-            <button data-bars="288" class="active">24h</button>
-            <button data-bars="2016">7d</button>
-            <button data-bars="8640">30d</button>
-          </div>
-          <button class="ghost" id="refresh-bars">refresh</button>
-        </div>
-      </div>
-      <div id="chart" class="chart"></div>
-      <p class="muted small" id="chart-note">loading…</p>
+<!-- ------------------------------------------------------------ overview -->
+<section class="view active" id="view-overview">
+  <div class="hero">
+    <div class="hero-main">
+      <span class="eyebrow">BTC / USDC · Binance spot</span>
+      <div class="price" id="hero-price">–</div>
+      <div class="change" id="hero-change"></div>
     </div>
-  </div>
-
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head">
-        <h2>What is stored</h2>
-        <button class="ghost" id="verify">check the data</button>
-      </div>
-      <dl class="stats" id="coverage-stats"></dl>
-      <p class="muted small" id="verify-note">Not checked yet. “Check the data” looks for broken candles, duplicates and missing stretches.</p>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h2>Download more</h2></div>
-      <form id="backfill-form" class="form">
-        <label>Years of history
-          <input id="backfill-years" type="number" step="0.5" min="0.1" max="10" value="2" />
-          <span class="hint">Fetches backwards too if you ask for more history than you have. Re-running is cheap.</span>
-        </label>
-        <button type="submit" class="primary">Download bars</button>
-      </form>
-      <p class="muted small">Needs access to <code>api.binance.com</code>.</p>
-    </div>
-  </div>
-
-  <details class="card">
-    <summary>Monthly files <span class="muted small" id="partition-count"></span></summary>
-    <p class="muted small">Bars are stored one Parquet file per month for fast reads.</p>
-    <div class="table-wrap"><table class="table" id="partitions"></table></div>
-  </details>
-</section>
-
-<!-- -------------------------------------------------------------- dataset -->
-<section class="panel" id="panel-dataset">
-  <p class="panel-intro">
-    Each bar gets a label describing what happened next: did price reach the
-    <em>profit target</em> first, the <em>stop loss</em> first, or neither within
-    the holding time? The model learns to predict that label from past bars only.
-  </p>
-
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head"><h2>How labels are made</h2></div>
-      <form id="dataset-form" class="grid-form">
-        <label>Profit target (× ATR)
-          <input id="k-up" type="number" step="0.1" min="0.1" max="20" value="2.0" />
-          <span class="hint">How far price must rise to count as a win, in multiples of typical bar movement. 2.0 = twice the usual move.</span>
-        </label>
-        <label>Stop loss (× ATR)
-          <input id="k-down" type="number" step="0.1" min="0.1" max="20" value="1.5" />
-          <span class="hint">How far it may fall before the trade is called a loss. Smaller = quicker stops.</span>
-        </label>
-        <label>Max holding time (bars)
-          <input id="horizon" type="number" step="1" min="1" max="288" value="12" />
-          <span class="hint">If neither level is hit, the trade closes after this many bars. 12 × 5m = one hour.</span>
-        </label>
-        <label>ATR period
-          <input id="atr-period" type="number" step="1" min="2" max="200" value="14" />
-          <span class="hint">Bars used to measure “typical movement”. 14 is standard.</span>
-        </label>
-        <label>Information delay (bars)
-          <input id="feature-lag" type="number" step="1" min="0" max="10" value="1" />
-          <span class="hint">1 = the model never sees the bar it is predicting. 0 = it may use that bar's own prices.</span>
-        </label>
-        <label>Both levels hit in one bar
-          <select id="ambiguity">
-            <option value="stop_priority">assume the loss (cautious)</option>
-            <option value="up_priority">assume the win (optimistic)</option>
-          </select>
-          <span class="hint">With 5-minute candles we cannot know which came first, so we pick one.</span>
-        </label>
-      </form>
-      <div class="controls">
-        <button id="preview-labels">Preview the counts</button>
-        <button class="primary" id="build-dataset">Build the dataset</button>
-      </div>
-      <p class="muted small">
-        “Preview” only counts labels. “Build” writes <code>data/dataset.parquet</code>,
-        which training reads.
-      </p>
-    </div>
-
-    <div class="card grow">
-      <div class="card-head"><h2>Last build</h2></div>
-      <dl class="stats" id="dataset-stats"><dt>—</dt><dd class="muted">Nothing built yet. Press “Build the dataset”.</dd></dl>
-      <div id="class-table"></div>
-      <div id="preview-result"></div>
-      <p class="muted small" id="class-note" hidden>
-        Rows = labelled bars. Mean return = what a trade would have made on
-        average for that outcome, before fees.
-      </p>
-    </div>
-  </div>
-</section>
-
-<!-- -------------------------------------------------------------- leakage -->
-<section class="panel" id="panel-leakage">
-  <p class="panel-intro">
-    A safety check, not a quality score. It recomputes every feature from a
-    truncated history and proves none of them can see future bars. If this fails,
-    a model trained on the data is worthless — it learned from the answer sheet.
-  </p>
-
-  <div class="row">
-    <div class="card">
-      <div class="card-head"><h2>Run it</h2></div>
-      <form id="leakage-form" class="form">
-        <label>Rows to spot-check
-          <input id="leakage-samples" type="number" min="1" max="50" value="10" />
-          <span class="hint">More rows = slower but harder to fool. 10 is fine.</span>
-        </label>
-        <button type="submit" class="primary">Run the check</button>
-      </form>
-      <p class="muted small">
-        Uses the label settings from the previous tab. Takes a few seconds on
-        two years of bars.
-      </p>
-    </div>
-    <div class="card grow">
-      <div class="card-head"><h2>Result</h2><span id="leakage-badge" class="badge">not run</span></div>
-      <div id="leakage-checks" class="checks"><p class="muted small">Not run yet. Press “Run the check”.</p></div>
-    </div>
-  </div>
-</section>
-
-<!-- ------------------------------------------------------------- training -->
-<section class="panel" id="panel-training">
-  <p class="panel-intro">
-    A small transformer trained on windows of past bars. Runs happen in the
-    background, you can stop at any time, and a stopped run still saves what it
-    learned.
-  </p>
-
-  <div class="row">
-    <div class="card">
-      <div class="card-head">
-        <h2>Start a run</h2>
-        <span class="badge" id="training-availability">checking…</span>
-      </div>
-      <p class="muted small" id="training-reason"></p>
-      <form id="train-form" class="grid-form">
-        <label>Time limit (minutes)
-          <input id="train-minutes" type="number" step="1" min="0" max="1440" placeholder="until stopped" />
-          <span class="hint">Leave empty to run until you press Stop.</span>
-        </label>
-        <label>Max epochs
-          <input id="train-epochs" type="number" step="1" min="0" max="100000" value="0" />
-          <span class="hint">0 = no epoch limit. One epoch is a full pass over the training data.</span>
-        </label>
-        <label>Window (bars)
-          <input id="train-window" type="number" step="1" min="8" max="512" value="64" />
-          <span class="hint">How many past bars the model sees per prediction. 64 × 5m ≈ 5 hours; 128 was tested and scored the same.</span>
-        </label>
-        <label>Batch size
-          <input id="train-batch" type="number" step="1" min="16" max="4096" value="256" />
-          <span class="hint">Examples per gradient step. Bigger is faster but needs more memory.</span>
-        </label>
-        <label>Learning rate
-          <input id="train-lr" type="number" step="0.0001" min="0.000001" max="1" value="0.0003" />
-          <span class="hint">How far each step moves. 0.0003 fits faster; 0.0001 was tested and reached the same place slower.</span>
-        </label>
-        <label>Patience
-          <input id="train-patience" type="number" step="1" min="0" max="1000" value="0" />
-          <span class="hint">0 = never stop on its own. Set it only if you want the run to end by itself.</span>
-        </label>
-        <label>Device
-          <select id="train-device">
-            <option value="auto">automatic (test the GPU)</option>
-            <option value="cpu">CPU only</option>
-          </select>
-          <span class="hint">The GPU is tested with a real forward/backward pass before use.</span>
-        </label>
-      </form>
-      <div class="controls">
-        <button class="primary" id="start-training">Start training</button>
-        <button id="stop-training" disabled>Stop</button>
-      </div>
-      <p class="muted small">
-        With the time limit empty, epochs 0 and patience 0, a run continues until
-        you press Stop. The best weights are written every time validation
-        improves, so stopping throws nothing away and a crash loses at most one
-        epoch.
-      </p>
-    </div>
-
-    <div class="card grow">
-      <div class="card-head"><h2>This run</h2><span class="badge" id="train-state">idle</span></div>
-      <dl class="stats" id="train-live"><dt>state</dt><dd>No run yet.</dd></dl>
-      <pre id="train-log" class="log compact">Start a run to see its progress here.</pre>
-    </div>
-  </div>
-
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head"><h2>How it did on unseen data</h2><span class="muted small" id="train-meta"></span></div>
-      <div id="train-metrics"><p class="muted small">No finished run yet.</p></div>
-    </div>
-  </div>
-
-  <details class="card" open>
-    <summary>Models <span class="muted small" id="model-count"></span></summary>
-    <p class="muted small">
-      Every run is recorded. <strong>candidate</strong> means it beat the
-      “always guess the most common outcome” baseline; <strong>draft</strong>
-      means it did not, and is kept for inspection rather than deleted.
-    </p>
-    <div class="table-wrap"><table class="table" id="model-table"></table></div>
-  </details>
-</section>
-
-<!-- ------------------------------------------------------------- exchange -->
-<section class="panel" id="panel-exchange">
-  <p class="panel-intro">
-    Binance's trading rules for this pair. The execution layer will round to
-    these values and re-fetch them hourly — precision is never hardcoded.
-  </p>
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head">
-        <h2>Current filters</h2>
-        <button class="ghost" id="refresh-exchange">fetch from Binance</button>
-      </div>
-      <div class="table-wrap"><table class="table" id="exchange-table"></table></div>
-    </div>
-  </div>
-</section>
-
-<!-- -------------------------------------------------------------- console -->
-<section class="panel" id="panel-console">
-  <p class="panel-intro">
-    Every long action runs as a background job. This is where you see what is
-    running, what finished, and the full log if something failed.
-  </p>
-  <div class="row">
-    <div class="card narrow">
-      <div class="card-head"><h2>Jobs</h2></div>
-      <div id="job-list" class="job-list"><p class="muted small">No jobs yet.</p></div>
-    </div>
-    <div class="card grow">
-      <div class="card-head">
-        <h2 id="log-title">Log</h2>
-        <span class="muted small" id="log-meta"></span>
-      </div>
-      <pre id="log" class="log">Pick a job on the left to read its log.</pre>
-    </div>
-  </div>
-</section>
-
-
-<!-- ------------------------------------------------------------- backtest -->
-<section class="panel" id="panel-backtest">
-  <p class="panel-intro">
-    Replays the most recent 15% of the data — the part the model never saw
-    during training — and turns its signals into trades. Fees and slippage are
-    charged on both sides, and the result is set against simply holding PAXG
-    over the same window.
-  </p>
-
-  <div class="row">
-    <div class="card">
-      <div class="card-head"><h2>Costs and size</h2></div>
-      <form id="backtest-form" class="grid-form">
-        <label>Starting money (USDT)
-          <input id="bt-equity" type="number" step="100" min="100" value="10000" />
-          <span class="hint">Everything is measured from here.</span>
-        </label>
-        <label>Fees (bps per side)
-          <input id="bt-fees" type="number" step="1" min="0" max="100" value="10" />
-          <span class="hint">10 bps = 0.10% each way, Binance spot with no discount.</span>
-        </label>
-        <label>Slippage (bps per side)
-          <input id="bt-slip" type="number" step="1" min="0" max="100" value="2" />
-          <span class="hint">How much worse than the quoted price you expect to fill.</span>
-        </label>
-        <label>Minimum confidence
-          <input id="bt-conf" type="number" step="0.05" min="0" max="0.9" value="0" />
-          <span class="hint">Skip signals the model is unsure about. 0 = take every long signal.</span>
-        </label>
-      </form>
-      <div class="controls">
-        <button class="primary" id="run-backtest">Run the backtest</button>
-      </div>
-      <p class="muted small">Uses the newest model that has a checkpoint.</p>
-    </div>
-
-    <div class="card grow">
-      <div class="card-head"><h2>What it would have made</h2><span class="badge" id="bt-badge">not run</span></div>
-      <div id="bt-verdict"></div>
-      <dl class="stats" id="bt-stats"><dt>—</dt><dd>No backtest yet. Press “Run the backtest”.</dd></dl>
-    </div>
+    <dl class="hero-stats">
+      <div><dt>24h high</dt><dd id="hero-high">–</dd></div>
+      <div><dt>24h low</dt><dd id="hero-low">–</dd></div>
+      <div><dt>Last bar</dt><dd id="hero-time">–</dd></div>
+    </dl>
+    <button class="hero-risk" id="hero-risk" data-goto="risk" title="open the risk model">
+      <span class="eyebrow">Risk model today</span>
+      <strong id="hero-risk-action">not run</strong>
+      <span class="muted" id="hero-risk-note">Run the test on the Risk model page.</span>
+    </button>
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Equity</h2><span class="muted small" id="bt-meta"></span></div>
-    <div id="bt-chart" class="chart"></div>
-    <p class="hint" style="margin-top:8px">Gold line: the model's equity after each trade, costs included. Grey dashed line: the same money simply holding PAXG.</p>
-    <p class="chart-verdict" id="bt-chart-verdict"></p>
-  </div>
-
-  <details class="card">
-    <summary>Recent trades <span class="muted small" id="bt-trade-count"></span></summary>
-    <div class="table-wrap"><table class="table" id="bt-trades"></table></div>
-  </details>
-</section>
-
-
-<!-- --------------------------------------------------------- walk-forward -->
-<section class="panel" id="panel-search">
-  <p class="panel-intro">
-    Trains a fresh model on everything before each 90-day block, then trades
-    that block, then slides forward. Nineteen blocks cover six years, so you see
-    the <em>distribution</em> of quarters instead of one lucky split.
-  </p>
-
-  <div class="row">
-    <div class="card">
-      <div class="card-head"><h2>What to try</h2></div>
-      <form id="wf-form" class="grid-form">
-        <label>Timeframe
-          <select id="wf-interval">
-            <option value="4h" selected>4h</option>
-            <option value="1h">1h</option>
-            <option value="1d">1d</option>
-          </select>
-          <span class="hint">4h is where fees stop dominating the move. Bars download automatically.</span>
-        </label>
-        <label>Strategy
-          <select id="wf-policy">
-            <option value="hold">long by default, exit when the model says stop</option>
-            <option value="signal">trade only when the model says buy</option>
-          </select>
-          <span class="hint">“Long by default” keeps you in like buy-and-hold and only steps aside on a bearish signal — the direct test against holding.</span>
-        </label>
-        <label>Profit targets (× ATR)
-          <input id="wf-k-up" value="3,3.5,4" />
-          <span class="hint">Comma list — each value is a row in the grid.</span>
-        </label>
-        <label>Stop losses (× ATR)
-          <input id="wf-k-down" value="2.5,3" />
-          <span class="hint">Comma list.</span>
-        </label>
-        <label>Max holding (bars)
-          <input id="wf-holding" value="192,288" />
-          <span class="hint">At 4h, 192 bars is 32 days and 288 is 48.</span>
-        </label>
-        <label>Model windows
-          <input id="wf-window" value="32,64" />
-          <span class="hint">Bars of history the model sees per prediction.</span>
-        </label>
-        <label>Seeds
-          <input id="wf-seeds" value="7,8,9" />
-          <span class="hint">More seeds separate a real edge from a lucky initialisation.</span>
-        </label>
-        <label>Test block (days)
-          <input id="wf-test-days" type="number" min="30" max="365" value="90" />
-        </label>
-        <label>Validation (days)
-          <input id="wf-val-days" type="number" min="30" max="365" value="90" />
-        </label>
-        <label>Epochs per fold
-          <input id="wf-epochs" type="number" min="1" max="200" value="15" />
-        </label>
-      </form>
-      <div class="controls">
-        <button class="primary" id="start-walkforward">Start the sweep</button>
-        <button id="stop-walkforward" disabled>Stop</button>
+    <div class="head">
+      <h2>Price</h2>
+      <div class="seg" id="range">
+        <button data-bars="288" class="active">1 day</button>
+        <button data-bars="2016">1 week</button>
+        <button data-bars="4032">2 weeks</button>
       </div>
     </div>
-
-    <div class="card grow">
-      <div class="card-head"><h2>Progress</h2><span class="badge" id="wf-state">idle</span></div>
-      <dl class="stats" id="wf-stats"><dt>—</dt><dd>No sweep yet.</dd></dl>
-      <p class="hint" id="wf-note">
-        A setting is only ranked once every fold has finished, so the leaderboard
-        fills in one row at a time, roughly every two minutes.
-      </p>
-    </div>
+    <div class="readout" id="chart-readout">Hover the chart to read a candle.</div>
+    <div id="chart" class="chart"></div>
   </div>
 
-  <div class="card grow">
-    <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="wf-best"></span></div>
-    <div class="table-wrap"><table class="table" id="wf-table"></table></div>
-    <p class="hint" style="margin-top:8px">
-      <strong>median quarter</strong> — the typical 90-day block, after fees.
-      <strong>worst</strong> — the quarter that pays for the rest.
-      <strong>≥ +5%</strong> — how often the goal was cleared.
-      <strong>beats hold</strong> — how often it beat simply holding PAXG over
-      the same block. That last one is the number that matters.
-    </p>
+  <div class="card">
+    <h2>Data</h2>
+    <p id="data-summary" class="lead">Loading…</p>
+    <ul class="facts" id="data-facts"></ul>
+    <div class="actions">
+      <button class="primary" id="update-data">Download latest bars</button>
+      <button id="check-data">Check the data</button>
+    </div>
+    <p class="hint">Downloading only fetches what is missing. Checking looks for broken
+      candles, gaps, and anything in the features that could see the future.</p>
   </div>
 </section>
 
-
-<!-- --------------------------------------------------------------- research -->
-<section class="panel" id="panel-research">
-  <p class="panel-intro">
-    Starts the long campaign: the same walk-forward engine, detached from this
-    tab. It keeps training if you close the browser or restart the server, and
-    resumes from the folds already on disk. Leave it running overnight; the
-    charts fill in as each setting finishes all of its quarters.
-  </p>
-
+<!-- --------------------------------------------------------------- train -->
+<section class="view" id="view-train">
   <div class="card">
-    <div class="card-head">
-      <h2>Campaign settings</h2>
-      <span class="badge" id="rs-state">idle</span>
-    </div>
-    <form id="rs-form" class="grid-form">
-      <label>Timeframe
-        <select id="rs-interval">
-          <option value="4h" selected>4h</option>
-          <option value="1h">1h</option>
-          <option value="1d">1d</option>
+    <h2>Train and test a model</h2>
+    <p class="hint">Each bar is labelled by what happened next: price reached the target,
+      hit the stop, or did neither in time. The model learns to predict that from past
+      bars, then trades the newest 15% of the data it never saw.</p>
+    <form id="train-form" class="fields">
+      <label>Profit target
+        <input id="k-up" type="number" step="0.1" min="0.1" max="20" value="2.0" />
+        <span class="hint">× typical bar move (ATR)</span>
+      </label>
+      <label>Stop loss
+        <input id="k-down" type="number" step="0.1" min="0.1" max="20" value="1.5" />
+        <span class="hint">× typical bar move (ATR)</span>
+      </label>
+      <label>Give up after
+        <input id="holding" type="number" step="1" min="1" max="288" value="12" />
+        <span class="hint">bars (12 × 5 min = 1 hour)</span>
+      </label>
+      <label>Training time
+        <select id="train-minutes">
+          <option value="5">5 minutes</option>
+          <option value="15" selected>15 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="">until I press Stop</option>
         </select>
-        <span class="hint">4h is where fees stop dominating the move.</span>
-      </label>
-      <label>Strategy
-        <select id="rs-policy">
-          <option value="hold" selected>long by default, exit on stop</option>
-          <option value="signal">trade only on a buy signal</option>
-        </select>
-        <span class="hint">“Long by default” is the direct test against holding.</span>
-      </label>
-      <label>Profit targets (× ATR)
-        <input id="rs-k-up" value="2.5,3,3.5,4" />
-        <span class="hint">Comma list — each value is a row in the grid.</span>
-      </label>
-      <label>Stop losses (× ATR)
-        <input id="rs-k-down" value="2,2.5,3,4" />
-        <span class="hint">Comma list.</span>
-      </label>
-      <label>Max holding (bars)
-        <input id="rs-holding" value="192,288" />
-        <span class="hint">At 4h, 192 is 32 days and 288 is 48.</span>
-      </label>
-      <label>Model windows
-        <input id="rs-window" value="32,64,128" />
-        <span class="hint">Bars of history per prediction.</span>
-      </label>
-      <label>Seeds
-        <input id="rs-seeds" value="7" />
-        <span class="hint">The runner advances past these when a pass finishes.</span>
-      </label>
-      <label>Epochs per fold
-        <input id="rs-epochs" type="number" min="1" max="500" value="15" />
-      </label>
-      <label>Minutes per fold
-        <input id="rs-minutes" type="number" min="0.1" max="120" step="0.1" value="3" />
-      </label>
-      <label>Test block (days)
-        <input id="rs-test-days" type="number" min="1" max="365" value="90" />
-      </label>
-      <label>Validation (days)
-        <input id="rs-val-days" type="number" min="1" max="365" value="90" />
-      </label>
-      <label>Min train (days)
-        <input id="rs-min-train-days" type="number" min="1" max="3000" value="365" />
-      </label>
-      <label>Fee (bps)
-        <input id="rs-fee-bps" type="number" min="0" max="100" value="10" />
-      </label>
-      <label>Slippage (bps)
-        <input id="rs-slip-bps" type="number" min="0" max="100" value="2" />
-      </label>
-      <label>Stop thresholds
-        <input id="rs-thresholds" value="0.3,0.35,0.4,0.45,0.5,0.55,0.6,1" />
-        <span class="hint">Chosen per fold on validation. 1.0 = never step aside.</span>
-      </label>
-      <label>Re-entry margin
-        <input id="rs-reentry" type="number" min="0" max="0.5" step="0.01" value="0.05" />
-      </label>
-      <label>Min flat bars
-        <input id="rs-min-flat" type="number" min="0" max="100" value="1" />
-      </label>
-      <label>Device
-        <select id="rs-device">
-          <option value="auto" selected>auto</option>
-          <option value="cpu">cpu</option>
-        </select>
+        <span class="hint">best weights are kept whenever it stops</span>
       </label>
     </form>
-    <div class="controls">
-      <button class="primary" id="rs-start">Start campaign</button>
-      <button id="rs-stop" disabled>Stop after this fold</button>
+    <div class="actions">
+      <button class="primary" id="run-train">Train and test</button>
     </div>
-    <p class="hint">
-      The campaign is a separate process. Closing this tab or restarting the
-      server does not stop it. Use <strong>Stop</strong>, or
-      <code>touch data/overnight/STOP</code> from a shell.
-    </p>
+    <ol class="steps" id="steps"></ol>
   </div>
 
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head"><h2>Progress</h2><span class="muted small" id="rs-best"></span></div>
-      <dl class="stats" id="rs-stats"><dt>—</dt><dd>No campaign yet.</dd></dl>
-    </div>
-    <div class="card grow">
-      <div class="card-head"><h2>Log</h2><span class="muted small">one line per finished setting</span></div>
-      <pre class="log compact rs-log" id="rs-log">No campaign log yet.</pre>
+  <div class="card hidden" id="live-card">
+    <h2>Training, live <span class="muted" id="live-state"></span></h2>
+    <p class="sentence" id="live-verdict"></p>
+    <p class="hint">Updates every two seconds while a model trains. Each point is one pass
+      over the training data (an epoch). The held-out data is never trained on, so it shows
+      whether the model is learning something general or only memorising.</p>
+    <h3 class="chart-title">Error, lower is better</h3>
+    <p class="legend"><span><i class="s-hold"></i>on the data it trains on</span><span><i class="s-model"></i>on held-out data</span></p>
+    <div id="live-loss" class="chart small"></div>
+    <h3 class="chart-title">Score on held-out data, higher is better</h3>
+    <p class="legend"><span><i class="s-model"></i>model</span><span><i class="s-guess"></i>always guessing the same answer</span></p>
+    <div id="live-score" class="chart small"></div>
+  </div>
+
+  <div class="card">
+    <h2>Result</h2>
+    <div id="result"><p class="muted">No model yet. Press “Train and test”.</p></div>
+    <p class="legend hidden" id="bt-legend"><span><i class="s-model"></i>model</span><span><i class="s-hold"></i>just holding BTC</span></p>
+    <div id="bt-chart" class="chart small hidden"></div>
+  </div>
+
+  <details class="card">
+    <summary>Past models <span class="muted" id="model-count"></span></summary>
+    <div class="table-wrap"><table id="models"></table></div>
+  </details>
+</section>
+
+<!-- ---------------------------------------------------------- risk model -->
+<section class="view" id="view-risk">
+  <div class="card">
+    <h2>Risk model</h2>
+    <p class="hint">A neural network and a gradient-boosted model, averaged, predict the chance
+      of a sharp fall. The rule stays long BTC and steps aside when that chance is high. It is
+      tested on every 90-day block since 2018, each time with models that only saw the past,
+      and set against simply holding, a no-model trend rule, and random exits. Fees and
+      slippage are included. Takes about two minutes.</p>
+    <form class="fields" id="risk-form">
+      <label>Watch for a fall of
+        <select id="risk-drawdown">
+          <option value="0.05">5%</option>
+          <option value="0.1" selected>10%</option>
+          <option value="0.15">15%</option>
+          <option value="0.2">20%</option>
+        </select>
+        <span class="hint">measured from the close to the lowest low</span>
+      </label>
+      <label>Within
+        <select id="risk-horizon">
+          <option value="2">2 days</option>
+          <option value="5" selected>5 days</option>
+          <option value="10">10 days</option>
+          <option value="20">20 days</option>
+        </select>
+        <span class="hint">10% within 5 days is the default the test was fixed on</span>
+      </label>
+    </form>
+    <div class="actions">
+      <button class="primary" id="risk-run">Run the test</button>
     </div>
   </div>
 
-  <div class="row">
-    <div class="card grow">
-      <div class="card-head"><h2>Quarter by quarter</h2><span class="muted small" id="rs-quarter-note"></span></div>
-      <div class="rs-chart" id="rs-quarter-chart">
-        <p class="muted small">Waiting for the first setting to finish all of its folds.</p>
-      </div>
-      <div class="rs-legend">
-        <span class="rs-key"><i style="background:#d9b25f"></i> strategy</span>
-        <span class="rs-key"><i style="background:#5a6c85"></i> buy &amp; hold</span>
-      </div>
-      <p class="chart-verdict" id="rs-quarter-verdict"></p>
-    </div>
-    <div class="card grow">
-      <div class="card-head"><h2>Cumulative</h2><span class="muted small" id="rs-cum-note"></span></div>
-      <div class="rs-chart" id="rs-cum-chart">
-        <p class="muted small">Waiting for the first setting to finish all of its folds.</p>
-      </div>
-      <div class="rs-legend">
-        <span class="rs-key"><i style="background:#d9b25f"></i> strategy</span>
-        <span class="rs-key"><i style="background:#5a6c85"></i> buy &amp; hold</span>
-      </div>
-      <p class="chart-verdict" id="rs-cum-verdict"></p>
-    </div>
+  <div class="card">
+    <h2>How it did</h2>
+    <div id="risk-result"><p class="muted">Not run yet. Press “Run the test”.</p></div>
+    <p class="legend hidden" id="risk-legend"><span><i class="s-model"></i>risk model</span><span><i class="s-hold"></i>just holding</span><span><i class="s-trend"></i>trend rule (no model)</span></p>
+    <div class="readout hidden" id="risk-readout">Hover the chart to compare the three on any day.</div>
+    <div id="risk-chart" class="chart small hidden"></div>
   </div>
 
-  <div class="card grow">
-    <div class="card-head"><h2>Leaderboard</h2><span class="muted small" id="rs-board-note"></span></div>
-    <div class="table-wrap"><table class="table rs-table" id="rs-leaderboard"></table></div>
-    <p class="hint">
-      Ranked by <strong>median excess</strong> over holding, not raw return.
-      Click a row to chart that setting. A setting appears once all of its folds
-      finish.
-    </p>
+  <details class="card">
+    <summary>Block by block <span class="muted" id="risk-fold-count"></span></summary>
+    <div class="table-wrap"><table id="risk-folds"></table></div>
+  </details>
+
+  <div class="card">
+    <h2>Paper record</h2>
+    <p class="hint">Every run with the default settings writes down its reading for the next
+      4-hour bar, with the time it was made, before anyone knows the outcome. The first
+      reading for a bar is kept; running again cannot change it. A reading made more than
+      ten minutes after its bar opened is booked at the next bar. This is the record that
+      has to agree with the test above before any real money is considered. Nothing here
+      places an order.</p>
+    <p class="hint" id="paper-schedule"></p>
+    <div id="paper-result"><p class="muted">No readings yet.</p></div>
+    <details>
+      <summary>Readings <span class="muted" id="paper-count"></span></summary>
+      <div class="table-wrap"><table id="paper-rows"></table></div>
+    </details>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------ activity -->
+<section class="view" id="view-activity">
+  <div class="card split">
+    <div class="jobs" id="jobs"><p class="muted">Nothing has run yet.</p></div>
+    <pre class="log" id="log">Pick a job to read its log.</pre>
   </div>
 </section>
 

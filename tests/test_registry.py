@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from gold_neural.registry import Registry, new_id
+from crypto_neural.registry import Registry, new_id
 
 
 def _make(registry: Registry, name: str = "m1") -> str:

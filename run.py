@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single entrypoint: start the gold-neural web UI and API.
+"""Single entrypoint: start the crypto-neural web UI and API.
 
     python run.py
 
@@ -19,16 +19,14 @@ import logging
 import socket
 import sys
 from dataclasses import replace
-from pathlib import Path
 
 import uvicorn
 
-from gold_neural.config import AppConfig, load_config
-from gold_neural.server.app import create_app
-from gold_neural.server.security import resolve_token
-from gold_neural.server.tls import ensure_certificate
+from crypto_neural.config import AppConfig, load_config
+from crypto_neural.server.app import create_app
+from crypto_neural.server.tls import ensure_certificate
 
-log = logging.getLogger("gold_neural.run")
+log = logging.getLogger("crypto_neural.run")
 
 
 def _lan_address(host: str) -> str:
@@ -44,9 +42,9 @@ def _lan_address(host: str) -> str:
     return host
 
 
-def _banner(config: AppConfig, url: str, token: str, generated: bool, tls: bool) -> None:
+def _banner(config: AppConfig, url: str, tls: bool) -> None:
     print()
-    print(f"  gold-neural {__import__('gold_neural').__version__}")
+    print(f"  crypto-neural {__import__('crypto_neural').__version__}")
     print(f"  UI          {url}")
     print(f"  symbol      {config.exchange.symbol} {config.exchange.interval}")
     print(f"  data        {config.data_root.resolve()}")
@@ -56,14 +54,7 @@ def _banner(config: AppConfig, url: str, token: str, generated: bool, tls: bool)
         "  training    "
         + ("pytorch present (device probed per run)" if torch_spec else "unavailable: pip install torch")
     )
-    if generated:
-        print()
-        print("  first boot: an API token was generated for you")
-        print(f"  token       {token}")
-        print(f"  stored in   {Path(config.server.token_file).resolve()} (0600)")
-        print("  paste it into the login box once; the browser remembers it")
-    else:
-        print(f"  auth        bearer token from {config.server.token_env} or token file")
+    print("  auth        none (open to anyone who can reach the port)")
     if config.server.allowed_ips:
         print(f"  allowlist   {', '.join(config.server.allowed_ips)}")
     print()
@@ -71,7 +62,7 @@ def _banner(config: AppConfig, url: str, token: str, generated: bool, tls: bool)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="run.py", description="gold-neural web UI (single entrypoint)"
+        prog="run.py", description="crypto-neural web UI (single entrypoint)"
     )
     parser.add_argument("--config", default=None, help="path to config.yaml")
     parser.add_argument("--host", default=None, help="bind address override")
@@ -96,8 +87,6 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
 
-    token, generated = resolve_token(config)
-
     tls = config.server.tls_enabled and not args.no_tls
     ssl_kwargs: dict[str, str] = {}
     if tls:
@@ -113,9 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     scheme = "https" if tls else "http"
     display_host = _lan_address(config.server.host)
     url = f"{scheme}://{display_host}:{config.server.port}/"
-    _banner(config, url, token, generated, tls)
+    _banner(config, url, tls)
 
-    app = create_app(config, token, tls=tls)
+    app = create_app(config, tls=tls)
     uvicorn.run(
         app,
         host=config.server.host,

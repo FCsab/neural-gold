@@ -5,14 +5,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from gold_neural.config import AppConfig, DataConfig, ServerConfig
-from gold_neural.data.store import BarStore
-from gold_neural.server.app import create_app
+from crypto_neural.config import AppConfig, DataConfig, ServerConfig
+from crypto_neural.data.store import BarStore
+from crypto_neural.server.app import create_app
 
-from .conftest import synthetic_bars
-
-TOKEN = "test-token-do-not-use"
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
+from .conftest import small_risk_config, synthetic_bars
 
 
 @pytest.fixture()
@@ -32,14 +29,14 @@ def seeded(config: AppConfig) -> AppConfig:
 
 @pytest.fixture()
 def client(config: AppConfig) -> TestClient:
-    app = create_app(config, TOKEN)
+    app = create_app(config)
     with TestClient(app) as test_client:
         yield test_client
 
 
 @pytest.fixture()
 def seeded_client(seeded: AppConfig) -> TestClient:
-    app = create_app(seeded, TOKEN)
+    app = create_app(seeded)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -47,18 +44,18 @@ def seeded_client(seeded: AppConfig) -> TestClient:
 def wait_for_job(client: TestClient, job_id: str, timeout: float = 60.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        payload = client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
+        payload = client.get(f"/api/jobs/{job_id}").json()
         if payload["status"] in {"ok", "failed", "stopped"}:
             return payload
         time.sleep(0.05)
     raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
-# -- static + auth ---------------------------------------------------------
+# -- static + access ---------------------------------------------------------
 def test_index_is_served_without_auth(client: TestClient):
     response = client.get("/")
     assert response.status_code == 200
-    assert "gold-neural" in response.text
+    assert "crypto-neural" in response.text
     assert "/assets/app.js" in response.text
 
 
@@ -68,10 +65,8 @@ def test_static_assets_are_served(client: TestClient):
     assert client.get("/assets/vendor/lightweight-charts.standalone.production.js").status_code == 200
 
 
-def test_api_requires_token(client: TestClient):
-    assert client.get("/api/status").status_code == 401
-    assert client.get("/api/status", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    assert client.get("/api/status", headers=AUTH).status_code == 200
+def test_api_needs_no_token(client: TestClient):
+    assert client.get("/api/status").status_code == 200
 
 
 def test_ip_allowlist_blocks_unknown_source(tmp_path):
@@ -79,14 +74,14 @@ def test_ip_allowlist_blocks_unknown_source(tmp_path):
         data=DataConfig(root=str(tmp_path / "data")),
         server=ServerConfig(tls_enabled=False, allowed_ips=("10.0.0.0/8",)),
     )
-    with TestClient(create_app(config, TOKEN)) as test_client:
-        assert test_client.get("/api/status", headers=AUTH).status_code == 403
+    with TestClient(create_app(config)) as test_client:
+        assert test_client.get("/api/status").status_code == 403
 
 
 # -- data endpoints --------------------------------------------------------
 def test_status_payload(client: TestClient):
-    payload = client.get("/api/status", headers=AUTH).json()
-    assert payload["symbol"] == "PAXGUSDT"
+    payload = client.get("/api/status").json()
+    assert payload["symbol"] == "BTCUSDC"
     assert payload["interval"] == "5m"
     assert payload["bar_seconds"] == 300
     training = payload["training"]
@@ -98,7 +93,7 @@ def test_status_payload(client: TestClient):
 
 
 def test_data_info_on_empty_store(client: TestClient):
-    payload = client.get("/api/data/info", headers=AUTH).json()
+    payload = client.get("/api/data/info").json()
     assert payload["coverage"]["rows"] == 0
     assert payload["partitions"] == []
     assert payload["dataset"] is None
@@ -106,7 +101,7 @@ def test_data_info_on_empty_store(client: TestClient):
 
 
 def test_bars_endpoint_returns_candles(seeded_client: TestClient):
-    payload = seeded_client.get("/api/data/bars?limit=50", headers=AUTH).json()
+    payload = seeded_client.get("/api/data/bars?limit=50").json()
     assert payload["interval_s"] == 300
     bars = payload["bars"]
     assert len(bars) == 50
@@ -117,27 +112,26 @@ def test_bars_endpoint_returns_candles(seeded_client: TestClient):
 
 
 def test_bars_endpoint_empty_store(client: TestClient):
-    payload = client.get("/api/data/bars?limit=10", headers=AUTH).json()
+    payload = client.get("/api/data/bars?limit=10").json()
     assert payload["bars"] == []
 
 
 # -- jobs ------------------------------------------------------------------
 def test_verify_job_runs(seeded_client: TestClient):
-    job_id = seeded_client.post("/api/data/verify", headers=AUTH, json={}).json()["job_id"]
+    job_id = seeded_client.post("/api/data/verify", json={}).json()["job_id"]
     job = wait_for_job(seeded_client, job_id)
     assert job["status"] == "ok", job
     assert job["result"]["rows"] == 3000
     assert job["result"]["ok"] is True
     assert job["log"], "job log should not be empty"
 
-    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    info = seeded_client.get("/api/data/info").json()
     assert info["verify"]["rows"] == 3000
 
 
 def test_dataset_preview_job(seeded_client: TestClient):
     response = seeded_client.post(
         "/api/dataset/preview",
-        headers=AUTH,
         json={"k_up": 2.0, "k_down": 1.5, "max_holding_bars": 12},
     )
     job = wait_for_job(seeded_client, response.json()["job_id"])
@@ -150,65 +144,69 @@ def test_dataset_preview_job(seeded_client: TestClient):
 def test_dataset_build_job_writes_report(seeded_client: TestClient):
     response = seeded_client.post(
         "/api/dataset/build",
-        headers=AUTH,
         json={"k_up": 2.0, "k_down": 1.5, "max_holding_bars": 12, "feature_lag": 1},
     )
     job = wait_for_job(seeded_client, response.json()["job_id"])
     assert job["status"] == "ok", job
     result = job["result"]
     assert result["rows"] > 0
-    from gold_neural.config import FeatureConfig
-    from gold_neural.features import feature_names
+    from crypto_neural.config import FeatureConfig
+    from crypto_neural.features import feature_names
 
     assert result["features"] == len(feature_names(FeatureConfig()))
     assert result["split"]["train"] > result["split"]["test"] > 0
     assert "1" in result["by_class"] or "-1" in result["by_class"]
 
-    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    info = seeded_client.get("/api/data/info").json()
     assert info["dataset"]["rows"] == result["rows"]
     assert info["dataset"]["params"]["k_up"] == 2.0
 
 
 def test_leakage_job_reports_pass(seeded_client: TestClient):
     response = seeded_client.post(
-        "/api/leakage/run", headers=AUTH, json={"samples": 2}
+        "/api/leakage/run", json={"samples": 2}
     )
     job = wait_for_job(seeded_client, response.json()["job_id"], timeout=120)
     assert job["status"] == "ok", job
     assert job["result"]["passed"] is True
 
-    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    info = seeded_client.get("/api/data/info").json()
     assert info["leakage"]["passed"] is True
     assert len(info["leakage"]["checks"]) >= 5
 
 
 def test_invalid_params_are_rejected(seeded_client: TestClient):
     response = seeded_client.post(
-        "/api/dataset/build", headers=AUTH, json={"k_up": -1}
+        "/api/dataset/build", json={"k_up": -1}
     )
     assert response.status_code == 422
 
 
 def test_unknown_job_is_404(client: TestClient):
-    assert client.get("/api/jobs/nope", headers=AUTH).status_code == 404
+    assert client.get("/api/jobs/nope").status_code == 404
 
 
 def test_job_list_is_available(seeded_client: TestClient):
-    seeded_client.post("/api/data/verify", headers=AUTH, json={})
-    payload = seeded_client.get("/api/jobs", headers=AUTH).json()
+    seeded_client.post("/api/data/verify", json={})
+    payload = seeded_client.get("/api/jobs").json()
     assert payload["jobs"]
     assert "log" not in payload["jobs"][0]
 
 
 # -- websocket -------------------------------------------------------------
-def test_websocket_requires_token(client: TestClient):
-    with pytest.raises(Exception):
-        with client.websocket_connect("/api/ws?token=wrong") as socket:
-            socket.receive_json()
+def test_websocket_respects_the_ip_allowlist(tmp_path):
+    config = AppConfig(
+        data=DataConfig(root=str(tmp_path / "data")),
+        server=ServerConfig(tls_enabled=False, allowed_ips=("10.0.0.0/8",)),
+    )
+    with TestClient(create_app(config)) as test_client:
+        with pytest.raises(Exception):
+            with test_client.websocket_connect("/api/ws") as socket:
+                socket.receive_json()
 
 
 def test_websocket_streams_jobs(client: TestClient):
-    with client.websocket_connect(f"/api/ws?token={TOKEN}") as socket:
+    with client.websocket_connect("/api/ws") as socket:
         message = socket.receive_json()
         assert message["type"] == "jobs"
         assert message["jobs"] == []
@@ -216,19 +214,19 @@ def test_websocket_streams_jobs(client: TestClient):
 
 # -- training --------------------------------------------------------------
 def _build_dataset(client: TestClient) -> None:
-    job_id = client.post("/api/dataset/build", headers=AUTH, json={}).json()["job_id"]
+    job_id = client.post("/api/dataset/build", json={}).json()["job_id"]
     job = wait_for_job(client, job_id, timeout=120)
     assert job["status"] == "ok", job
 
 
 def test_train_requires_dataset(client: TestClient):
-    response = client.post("/api/train/start", headers=AUTH, json={"minutes": 1})
+    response = client.post("/api/train/start", json={"minutes": 1})
     assert response.status_code == 409
     assert "dataset" in response.json()["detail"].lower()
 
 
 def test_train_status_reports_torch(client: TestClient):
-    payload = client.get("/api/train/status", headers=AUTH).json()
+    payload = client.get("/api/train/status").json()
     assert payload["dataset_ready"] is False
     assert payload["availability"]["available"] is True
     assert "torch" in payload["availability"]
@@ -239,7 +237,6 @@ def test_training_job_trains_and_registers_a_model(seeded_client: TestClient):
 
     response = seeded_client.post(
         "/api/train/start",
-        headers=AUTH,
         json={
             "minutes": 3,
             "epochs": 1,
@@ -257,9 +254,12 @@ def test_training_job_trains_and_registers_a_model(seeded_client: TestClient):
     assert result["model_id"].startswith("model_")
     assert result["epochs_done"] == 1
     assert result["checkpoint_path"]
+    # One live-chart point per epoch, carried from the child to the job.
+    assert [point["epoch"] for point in job["series"]] == [1.0]
+    assert set(job["series"][0]) >= {"train_loss", "val_loss", "val_balanced_accuracy"}
     assert result["metrics"]["test_rows"] > 0
 
-    models = seeded_client.get("/api/models", headers=AUTH).json()["models"]
+    models = seeded_client.get("/api/models").json()["models"]
     assert any(model["id"] == result["model_id"] for model in models)
     stored = next(model for model in models if model["id"] == result["model_id"])
     assert stored["status"] in {"candidate", "draft"}
@@ -271,7 +271,6 @@ def test_stop_requests_are_honoured(seeded_client: TestClient):
 
     job_id = seeded_client.post(
         "/api/train/start",
-        headers=AUTH,
         json={
             "minutes": 10,
             "epochs": 100000,
@@ -285,7 +284,7 @@ def test_stop_requests_are_honoured(seeded_client: TestClient):
     deadline = time.time() + 300
     ready = False
     while time.time() < deadline:
-        payload = seeded_client.get(f"/api/jobs/{job_id}", headers=AUTH).json()
+        payload = seeded_client.get(f"/api/jobs/{job_id}").json()
         assert payload["status"] not in {"ok", "failed"}, payload
         if payload["status"] == "running" and payload["message"].startswith("epoch"):
             ready = True
@@ -293,25 +292,25 @@ def test_stop_requests_are_honoured(seeded_client: TestClient):
         time.sleep(0.2)
     assert ready, "training never started producing epochs"
 
-    assert seeded_client.post(f"/api/jobs/{job_id}/stop", headers=AUTH).status_code == 200
+    assert seeded_client.post(f"/api/jobs/{job_id}/stop").status_code == 200
     job = wait_for_job(seeded_client, job_id, timeout=300)
     assert job["status"] == "stopped", job
     assert job["result"]["stop_reason"] == "stopped"
 
 
 def test_stop_unknown_job_is_409(client: TestClient):
-    assert client.post("/api/jobs/nope/stop", headers=AUTH).status_code == 409
+    assert client.post("/api/jobs/nope/stop").status_code == 409
 
 
 # -- backtest --------------------------------------------------------------
 def test_backtest_requires_dataset(client: TestClient):
-    response = client.post("/api/backtest/run", headers=AUTH, json={})
+    response = client.post("/api/backtest/run", json={})
     assert response.status_code == 409
 
 
 def test_backtest_without_a_model_fails_clearly(seeded_client: TestClient):
     _build_dataset(seeded_client)
-    job_id = seeded_client.post("/api/backtest/run", headers=AUTH, json={}).json()["job_id"]
+    job_id = seeded_client.post("/api/backtest/run", json={}).json()["job_id"]
     job = wait_for_job(seeded_client, job_id, timeout=120)
     assert job["status"] == "failed"
     assert "model" in (job["error"] or "").lower()
@@ -322,7 +321,6 @@ def test_backtest_after_training_produces_an_equity_curve(seeded_client: TestCli
 
     training = seeded_client.post(
         "/api/train/start",
-        headers=AUTH,
         json={
             "minutes": 3,
             "epochs": 1,
@@ -337,7 +335,6 @@ def test_backtest_after_training_produces_an_equity_curve(seeded_client: TestCli
 
     response = seeded_client.post(
         "/api/backtest/run",
-        headers=AUTH,
         json={"initial_equity": 1000, "fee_bps": 10, "slippage_bps": 2},
     )
     assert response.status_code == 200, response.text
@@ -352,90 +349,109 @@ def test_backtest_after_training_produces_an_equity_curve(seeded_client: TestCli
     assert result["verdict"]["text"]
     assert isinstance(result["equity_curve"], list)
 
-    info = seeded_client.get("/api/data/info", headers=AUTH).json()
+    info = seeded_client.get("/api/data/info").json()
     assert info["backtest"]["metrics"]["initial_equity"] == 1000
 
-    last = seeded_client.get("/api/backtest/last", headers=AUTH).json()
+    last = seeded_client.get("/api/backtest/last").json()
     assert last["model"]["id"].startswith("model_")
 
 
-# -- automated search ------------------------------------------------------
-def test_search_requires_bars(client: TestClient):
-    assert client.post("/api/search/start", headers=AUTH, json={}).status_code == 409
+# -- risk model -------------------------------------------------------------
+def test_risk_route_is_bounded(client: TestClient):
+    assert client.post("/api/risk/run", json={"drawdown": 0.9}).status_code == 422
+    assert client.post("/api/risk/run", json={"nope": 1}).status_code == 422
 
 
-def test_search_sweep_runs_and_is_recorded(seeded_client: TestClient):
-    response = seeded_client.post(
-        "/api/search/start",
-        headers=AUTH,
-        json={
-            "total_minutes": 2,
-            "per_candidate_minutes": 0.3,
-            "max_candidates": 2,
-            "epochs": 2,
-            "device": "cpu",
-            "refine_top": 0,
-        },
+def test_risk_job_runs_and_records(seeded: AppConfig):
+    from dataclasses import replace
+
+    # Small windows so the 3000 synthetic 5m bars hold several test blocks.
+    config = replace(seeded, risk=small_risk_config())
+    with TestClient(create_app(config)) as client:
+        response = client.post("/api/risk/run", json={})
+        assert response.status_code == 200, response.text
+        job = wait_for_job(client, response.json()["job_id"], timeout=300)
+
+        assert job["status"] == "ok", job
+        assert job["result"]["status"] in {"candidate", "draft"}
+        info = client.get("/api/data/info").json()
+        report = info["risk"]
+        assert report["period"]["folds"] >= 3
+        assert report["verdict"]["text"]
+        assert report["params"]["fee_bps"] == 10.0
+        assert job["result"]["recorded"] is True
+
+        # The reading is in the predictions log; a rerun for the same bar
+        # does not replace it.
+        again = wait_for_job(
+            client, client.post("/api/risk/run", json={}).json()["job_id"],
+            timeout=300,
+        )
+        assert again["status"] == "ok" and again["result"]["recorded"] is False
+
+        # A run with other settings is an experiment, not part of the series.
+        other = wait_for_job(
+            client,
+            client.post("/api/risk/run", json={"drawdown": 0.2}).json()["job_id"],
+            timeout=300,
+        )
+        assert other["status"] == "ok" and other["result"]["recorded"] is False
+
+        paper = client.get("/api/paper").json()
+        assert paper["readings"] == 1
+        assert paper["verdict"]
+
+
+def test_risk_job_with_the_neural_model_runs_in_a_child_process(seeded: AppConfig):
+    pytest.importorskip("torch")
+    from dataclasses import replace
+
+    config = replace(
+        seeded, risk=small_risk_config(model="ensemble", mlp_epochs=2, mlp_hidden=(8,))
     )
-    assert response.status_code == 200, response.text
-    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=900)
+    with TestClient(create_app(config)) as client:
+        response = client.post("/api/risk/run", json={})
+        job = wait_for_job(client, response.json()["job_id"], timeout=300)
 
-    assert job["status"] in {"ok", "stopped"}, job
-    report = job["result"]
-    assert report["candidates_total"] >= 1
-    assert report["candidates_done"] >= 1
-    assert report["rows"]
-    assert report["round_trip_cost_bps"] == 24.0
-
-    live = seeded_client.get("/api/search/last", headers=AUTH).json()
-    assert live["search_id"] == report["search_id"]
-
-    # The report is fetched by the browser, so it must be strict JSON.
-    import json as jsonlib
-
-    assert "Infinity" not in jsonlib.dumps(report)
-    assert "score" in report["rows"][0]
+        assert job["status"] == "ok", job
+        report = client.get("/api/data/info").json()["risk"]
+        assert report["params"]["model"] == "ensemble"
 
 
-# -- walk-forward ----------------------------------------------------------
-def test_walkforward_endpoints_exist(client: TestClient):
-    assert client.get("/api/walkforward/last", headers=AUTH).status_code == 404
-    assert client.post("/api/walkforward/start", headers=AUTH, json={"interval": "nope"}).status_code == 422
+def test_status_reports_whether_readings_are_scheduled(config: AppConfig):
+    from dataclasses import replace
+
+    with TestClient(create_app(config)) as client:
+        readings = client.get("/api/status").json()["readings"]
+        assert readings == {"scheduled": False, "next_at": None}
+
+    scheduled = replace(config, server=replace(config.server, record_readings=True))
+    with TestClient(create_app(scheduled)) as client:
+        for _ in range(50):
+            readings = client.get("/api/status").json()["readings"]
+            if readings["next_at"]:
+                break
+        assert readings["scheduled"] is True and readings["next_at"]
 
 
-def test_walkforward_sweep_runs_and_records(seeded_client: TestClient):
-    response = seeded_client.post(
-        "/api/walkforward/start",
-        headers=AUTH,
-        json={
-            "interval": "5m",
-            "k_up": [2.0],
-            "k_down": [1.5],
-            "holding": [12],
-            "window": [16],
-            "seeds": [7],
-            "test_days": 1,
-            "val_days": 1,
-            "min_train_days": 2,
-            "epochs": 1,
-            "device": "cpu",
-        },
-    )
-    assert response.status_code == 200, response.text
-    job = wait_for_job(seeded_client, response.json()["job_id"], timeout=600)
+def test_job_series_is_returned_with_the_job_and_capped():
+    from crypto_neural.server import jobs as jobs_module
+    from crypto_neural.server.jobs import JobManager
 
-    assert job["status"] in {"ok", "stopped"}, job
-    report = job["result"]
-    assert report["folds_total"] > 0
-    assert report["specs_total"] == 1
-    assert report["leaderboard"], report
+    manager = JobManager()
 
-    best = report["leaderboard"][0]
-    assert best["folds"] >= 1
-    assert "median_return" in best and "share_beating_hold" in best
+    def body(ctx):
+        for epoch in range(1, jobs_module.MAX_SERIES_POINTS + 11):
+            ctx.point({"epoch": epoch, "val_loss": 1.0 / epoch})
+        return {}
 
-    live = seeded_client.get("/api/walkforward/last", headers=AUTH).json()
-    assert live["folds_total"] == report["folds_total"]
-
-    info = seeded_client.get("/api/data/info", headers=AUTH).json()
-    assert info["walkforward"]["folds_total"] == report["folds_total"]
+    job_id = manager.submit("training", {}, body).id
+    deadline = time.time() + 30
+    while manager.get(job_id).running and time.time() < deadline:
+        time.sleep(0.02)
+    job = manager.get(job_id)
+    full = job.to_dict(include_log=True)
+    assert len(full["series"]) == jobs_module.MAX_SERIES_POINTS
+    assert full["series"][-1]["epoch"] == jobs_module.MAX_SERIES_POINTS + 10
+    # The websocket snapshot stays small: no series, like no log.
+    assert "series" not in job.to_dict(include_log=False)

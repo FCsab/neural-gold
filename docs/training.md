@@ -1,5 +1,9 @@
 # Training
 
+> **Measured on PAXG/USDT**, before the project switched to BTC/USDC on
+> 2026-11-04 (PAXG is not available in Hungary). The method still applies;
+> the numbers are PAXG's and have not been re-measured on BTC.
+
 Build-order step 2, partial: the model, the training loop, the registry, and
 the UI around them. What is *not* here: the compare view, shadow/live
 promotion, and the predictions log — those belong to the execution phase.
@@ -9,7 +13,7 @@ promotion, and the predictions log — those belong to the execution phase.
 Training is started from the **Training** tab, or from the API:
 
 ```bash
-curl -k -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -k -H "Content-Type: application/json" \
   -d '{"minutes": 10, "epochs": 200, "window": 64}' \
   https://127.0.0.1:8443/api/train/start
 ```
@@ -75,7 +79,7 @@ unless you actually train.
 
 ## Data and splits
 
-Training reads `data/dataset.parquet`, built from the Dataset tab. Feature
+Training reads `data/dataset.parquet`, built by the dataset step (`cli dataset`, or “Train and test” in the web UI). Feature
 names come from `data/reports/dataset.json`, falling back to the parquet
 schema.
 

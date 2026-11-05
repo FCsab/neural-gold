@@ -1,7 +1,20 @@
-# gold-neural
+# crypto-neural
 
-PAXG/USDT neural trading system. Binance spot, long-only, triple-barrier
-labels, 5-minute bars by default.
+BTC/USDC trading research system. Binance spot, long-only. Two models: a
+crash-risk model on 4h bars (a neural network + gradient-boosted ensemble;
+stay long, step aside when a sharp fall looks likely) and the original
+triple-barrier transformer on 5-minute bars.
+
+**Read `docs/risk.md` first.** The project started on PAXG/USDT (gold), which
+is not available in Hungary, and moved to BTC/USDC on 2026-11-04. On both
+assets, direction was not predictable from price history. The risk model (a
+neural network + gradient-boosted ensemble) does predict short-term BTC
+crashes better than chance over eight years of out-of-sample tests, but
+acting on that prediction did not beat buy-and-hold; a plain 200-day trend
+rule did better on risk than both, though random exits at its frequency did
+as well 13% of the time, so its edge is not established either. The model learns from BTC/USDT history
+(continuous since 2017), because BTC/USDC was delisted from 2022-09 to
+2023-03.
 
 `python run.py` starts one HTTPS server that serves the UI and the API.
 Backfill, label previews, dataset builds, the leakage suite, the exchange
@@ -24,43 +37,30 @@ The torch line is only needed for training. On an AMD GPU use
 `--index-url https://download.pytorch.org/whl/rocm6.4` instead; the device is
 probed per run either way.
 
-The first boot generates a self-signed certificate and an API token, prints
-both, and serves `https://<lan-ip>:8443/`. Paste the token once; the browser
-remembers it.
+The first boot generates a self-signed certificate and serves
+`https://<lan-ip>:8443/`. There is no login.
 
 ```
-  gold-neural 0.1.0
+  crypto-neural 0.1.0
   UI          https://192.168.1.20:8443/
-  symbol      PAXGUSDT 5m
-  data        /home/csabi/projects/gold-neural/data
+  symbol      BTCUSDC 5m
+  data        /home/csabi/projects/crypto-neural/data
   transport   HTTPS (self-signed)
 ```
 
-The page has three tabs — **Data** (market data, labels, look-ahead, exchange
-rules), **Model** (training, walk-forward, research), and **Backtest** — plus
-an Activity log. A status dot per tab and a “next step” banner always name the
-one thing left to do. Every control has a plain-English help line, and results
-open with a verdict in words before the numbers.
+The page has four views:
 
-- **Market data** — candlestick chart, what is stored, data check, backfill.
-- **Labels & dataset** — barrier settings, label preview, build Parquet.
-- **Look-ahead check** — the mandatory leakage suite, with metrics.
-- **Training** — run for N minutes or until you press Stop.
-- **Backtest** — replay the unseen test slice as trades with fees and
-  slippage, equity curve against buy-and-hold.
-- **Walk-forward** — trains a model on everything before each 90-day block,
-  trades that block, and slides forward across six years. Two policies: trade
-  the barrier signal, or stay long by default and step aside when the model
-  says stop — the direct test against just holding. You get the
-  distribution of quarters, not one lucky split: median, worst, how often it
-  clears +5%, and how often it beats simply holding. Runs from the browser;
-  `scripts/overnight.py` is the same engine for an unattended machine.
-- **Research** — starts that campaign from the browser as a detached,
-  resumable process. Progress, log, leaderboard, and two charts (quarter by
-  quarter, cumulative against holding) update live; it keeps running if the
-  tab or the server closes.
-- **Exchange rules** — fetch and cache `exchangeInfo` filters.
-- **Activity** — every job, live progress, full log.
+- **Overview** — price chart, what is stored, one button to download what is
+  missing and one to check the data (bar check plus look-ahead suite).
+- **Train** — three label settings and a time limit. One button builds the
+  dataset, runs the look-ahead check, trains, and backtests the unseen newest
+  15% with fees and slippage, then opens with a verdict against holding.
+- **Risk model** — the crash-risk walk-forward over every 90-day block since
+  2018, against buy-and-hold, a trend rule and random exits. About two
+  minutes. Shows the reading for the next 4h bar, marked as a draft when the
+  rule has not beaten holding, and the **paper record**: every reading
+  written down before its outcome, scored as the bars arrive.
+- **Activity** — every job and its log.
 
 See `docs/web-ui.md` for the API surface, security posture, and the reasoning
 behind the no-build-step frontend.
@@ -70,26 +70,26 @@ behind the no-build-step frontend.
 The same operations exist as a CLI, which is what CI and cron should use:
 
 ```bash
-.venv/bin/python -m gold_neural.cli backfill --years 2 --gaps
-.venv/bin/python -m gold_neural.cli info
-.venv/bin/python -m gold_neural.cli dataset --out data/dataset.parquet
-.venv/bin/python -m gold_neural.cli leakage --out data/leakage-report.json
+.venv/bin/python -m crypto_neural.cli backfill --years 2 --gaps
+.venv/bin/python -m crypto_neural.cli info
+.venv/bin/python -m crypto_neural.cli dataset --out data/dataset.parquet
+.venv/bin/python -m crypto_neural.cli leakage --out data/leakage-report.json
+.venv/bin/python -m crypto_neural.cli risk    # drawdown-risk walk-forward (4h), logs the reading
+.venv/bin/python -m crypto_neural.cli paper   # score the predictions log
+.venv/bin/python -m crypto_neural.cli funding # pre-registered funding experiment (once)
 .venv/bin/pytest
-./scripts/start_night.sh                    # unattended hold-policy sweep
 ```
 
-`scripts/start_night.sh` launches the same walk-forward engine in the
-background, with the hold policy as the default, and ranks settings by excess
-return over buy-and-hold. It resumes from the folds already on disk; see
-`docs/overnight.md` for the grid, the stop-threshold rule, and how to read the
-output.
+`risk` needs BTC/USDT 4h bars: `CRYPTONEURAL_EXCHANGE_SYMBOL=BTCUSDT
+CRYPTONEURAL_EXCHANGE_INTERVAL=4h .venv/bin/python -m crypto_neural.cli backfill
+--years 9.5` (the web job downloads them on first use).
 
 `leakage` exits non-zero when any check fails, so it gates a build without a
 wrapper script. `scripts/smoke.py` checks a running server end to end.
 
 ## What step 1 delivers
 
-- Paginated historical backfill of PAXG/USDT klines from Binance spot REST.
+- Paginated historical backfill of BTC/USDC klines from Binance spot REST.
 - Parquet storage partitioned by year/month, with a SQLite index of the
   stored ranges and gap diagnostics.
 - A leakage-safe feature builder (returns, EWMA/realised volatility, RSI,
@@ -102,24 +102,25 @@ wrapper script. `scripts/smoke.py` checks a running server end to end.
 ## Layout
 
 ```
-run.py                 entrypoint: TLS bootstrap, token, uvicorn
-gold_neural/
-  config.py            YAML + GOLDNEURAL_* env config, strict key checking
+run.py                 entrypoint: TLS bootstrap, uvicorn
+crypto_neural/
+  config.py            YAML + CRYPTONEURAL_* env config, strict key checking
   exchange/rest.py     async Binance REST: klines, exchangeInfo filters
   data/store.py        Parquet partitions + SQLite range index
   data/backfill.py     pagination, resume, bar verification
   indicators.py        causal ATR / RSI / EMA / z-score
   features.py          feature frame, feature_lag contract
-  labels.py            vectorised triple barrier
+  labels.py            vectorised triple barrier; drawdown label
+  risk.py              drawdown-risk walk-forward, placebo, next-bar reading
+  predictions.py       predictions log + paper record (no orders)
   dataset.py           time-aligned feature+label frame, walk-forward split
   leakage.py           the mandatory leakage suite
   model.py             window transformer + mandatory GPU probe
   training.py          training loop: time budget, cooperative stop, metrics
   backtest.py          trade simulation: fees, slippage, equity, buy-and-hold
-  search.py            candidate grid, cost pruning, validation scoring
   registry.py          SQLite model + training-run registry
   cli.py               headless backfill / dataset / labels / leakage
-  server/              FastAPI app, job queue, auth, TLS, reports
+  server/              FastAPI app, job queue, IP allowlist, TLS, reports
 web/                   single-page UI (plain ES2020, vendored chart lib)
 scripts/smoke.py       post-deploy check of a running server
 tests/                 pure-synthetic tests, no network required
@@ -179,14 +180,9 @@ Against live Binance data on 2026-10-31:
 - 210,322 feature rows × 21 features; walk-forward split 147k / 31.5k / 31.5k.
 - Leakage suite: PASS on the real series.
 - `pytest`: 110 tests, no network required.
-- `scripts/smoke.py` against the running server: 12/12 checks.
-- Headless Chromium: chart renders, all six tabs work, a label preview and a
-  training run both start and finish from the browser, zero console errors.
-- Guidance checked against both an empty data root and the populated one: the
-  next-step banner, tab dots, intro card and empty states all follow state.
-- Auto-search: a real 3-candidate sweep and a live 2-candidate sweep, watched
-  in the browser — the leaderboard gained a row while the job was still
-  running, and the final state read `done` with 2/2 candidates.
+- `scripts/smoke.py` against the running server: 11/11 checks.
+- Headless Chrome: all four views render with zero console errors, and a
+  data-check chain runs from the browser.
 - Training on the RX 7600 XT (ROCm): 10 epochs over 210k rows in 121 s,
   stopped exactly at the 2-minute budget, checkpoint written, balanced
   accuracy 0.403 against a 0.485 majority baseline — recorded as `draft`,

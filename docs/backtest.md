@@ -1,5 +1,9 @@
 # Backtest
 
+> **Measured on PAXG/USDT**, before the project switched to BTC/USDC on
+> 2026-11-04 (PAXG is not available in Hungary). The method still applies;
+> the numbers are PAXG's and have not been re-measured on BTC.
+
 Classification metrics answer "does it beat guessing". The backtest answers
 "would it have made money", which is a different question and often a less
 comfortable answer.
@@ -15,7 +19,7 @@ comfortable answer.
      timeout close,
    - **fees** (10 bps) and **slippage** (2 bps) charged on both sides.
 4. Compounds the result into an equity curve and compares it with simply
-   holding PAXG over the same window.
+   holding the asset over the same window.
 
 One position at a time, long only, all-in by default. Costs are configurable
 in the UI, so the sensitivity is visible rather than assumed.
@@ -43,7 +47,7 @@ The verdict the UI shows:
 
 ## Why -100% is the right answer here, not a bug
 
-The label configuration from the Dataset tab is `k_up = 2.0`, `k_down = 1.5`
+The default label configuration is `k_up = 2.0`, `k_down = 1.5`
 with a 12-bar hold. On 5-minute PAXG bars the mean ATR is **8.1 bps**, so:
 
 | | |

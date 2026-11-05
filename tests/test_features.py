@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from gold_neural.config import FeatureConfig
-from gold_neural.features import build_features, feature_names, required_history
+from crypto_neural.config import FeatureConfig
+from crypto_neural.features import build_features, feature_names, required_history
 
 
 def test_column_names_and_order(bars):
@@ -65,3 +65,36 @@ def test_missing_columns_rejected():
 def test_bad_macd_config_rejected(bars):
     with pytest.raises(ValueError, match="macd"):
         build_features(bars, FeatureConfig(macd=(12, 26)))
+
+
+REGIME = FeatureConfig(
+    momentum_windows=(24, 96),
+    momentum_z_windows=(96,),
+    sma_windows=(48, 192),
+    drawdown_windows=(96,),
+    rvol_windows=(12, 192),
+)
+
+
+def test_regime_features_are_named_in_order_and_warm_up(bars):
+    frame = build_features(bars, REGIME)
+
+    assert list(frame.columns) == feature_names(REGIME)
+    assert feature_names(REGIME)[-1] == "vol_ratio"
+    assert required_history(REGIME) >= 192
+    assert frame.iloc[required_history(REGIME) + 5 :].notna().all().all()
+
+
+def test_regime_features_are_prefix_invariant(bars):
+    full = build_features(bars, REGIME)
+    for index in (400, 1500, 2999):
+        prefix = build_features(bars.iloc[: index + 1].reset_index(drop=True), REGIME)
+        pd.testing.assert_series_equal(
+            full.iloc[index], prefix.iloc[-1], check_names=False
+        )
+
+
+def test_regime_features_pass_the_leakage_check(bars):
+    from crypto_neural.leakage import check_prefix_invariance
+
+    assert check_prefix_invariance(bars, REGIME, samples=8).passed

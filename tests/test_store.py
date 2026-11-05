@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from gold_neural.data.store import BAR_COLUMNS, BarStore, month_key
+from crypto_neural.data.store import BAR_COLUMNS, BarStore, month_key
 
 BAR_MS = 300_000
 
@@ -38,7 +38,7 @@ def _times_spanning_two_months() -> list[int]:
 
 
 def test_write_partitions_by_month(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     times = _times_spanning_two_months()
     assert month_key(times[0]) == (2023, 10)
     assert month_key(times[-1]) == (2023, 11)
@@ -60,7 +60,7 @@ def test_write_partitions_by_month(tmp_path):
 
 
 def test_rewrite_is_idempotent_and_last_write_wins(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     times = _times_spanning_two_months()
     store.write_bars(_frame(times))
     store.write_bars(_frame(times))
@@ -75,7 +75,7 @@ def test_rewrite_is_idempotent_and_last_write_wins(tmp_path):
 
 
 def test_duplicates_inside_one_batch_collapse(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     times = [int(pd.Timestamp("2024-01-01", tz="UTC").timestamp() * 1000)]
     frame = pd.concat([_frame(times), _frame(times)], ignore_index=True)
     frame.loc[1, "close"] = 2050.0
@@ -86,7 +86,7 @@ def test_duplicates_inside_one_batch_collapse(tmp_path):
 
 
 def test_range_filtering(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     times = _times_spanning_two_months()
     store.write_bars(_frame(times))
     subset = store.load_bars(start_ms=times[4], end_ms=times[8])
@@ -94,7 +94,7 @@ def test_range_filtering(tmp_path):
 
 
 def test_gap_detection(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     times = _times_spanning_two_months()
     with_gap = times[:4] + times[6:]
     store.write_bars(_frame(with_gap))
@@ -104,7 +104,7 @@ def test_gap_detection(tmp_path):
 
 
 def test_empty_store_reads_empty(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     assert store.load_bars().empty
     coverage = store.coverage()
     assert coverage.empty and coverage.rows == 0
@@ -112,7 +112,7 @@ def test_empty_store_reads_empty(tmp_path):
 
 
 def test_no_temp_files_left_behind(tmp_path):
-    store = BarStore(tmp_path, "PAXGUSDT", "5m")
+    store = BarStore(tmp_path, "BTCUSDC", "5m")
     store.write_bars(_frame(_times_spanning_two_months()))
     leftovers = list(store.partitions_dir.rglob("*.tmp"))
     assert leftovers == []
