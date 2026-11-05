@@ -455,3 +455,81 @@ def test_job_series_is_returned_with_the_job_and_capped():
     assert full["series"][-1]["epoch"] == jobs_module.MAX_SERIES_POINTS + 10
     # The websocket snapshot stays small: no series, like no log.
     assert "series" not in job.to_dict(include_log=False)
+
+
+# -- training restarts ------------------------------------------------------
+class _FakeCtx:
+    def __init__(self, stop_after: int | None = None):
+        self.lines: list[str] = []
+        self.calls = 0
+        self.stop_after = stop_after
+
+    def log(self, line: str) -> None:
+        self.lines.append(line)
+
+    def should_stop(self) -> bool:
+        return self.stop_after is not None and self.calls >= self.stop_after
+
+
+def _fake_child(outcomes, ctx, seen):
+    """Stand-in for the training child: attempt n ends as ``outcomes[n-1]``."""
+
+    def child(config, dataset_path, feature_names, checkpoint_dir, ctx_, *, attempt, epoch_offset):
+        ctx.calls += 1
+        seen.append({"attempt": attempt, "seed": config.seed, "offset": epoch_offset})
+        val_loss, reason = outcomes[attempt - 1]
+        checkpoint_dir.mkdir(parents=True)
+        (checkpoint_dir / "v1.pt").write_text("weights")
+        return {
+            "status": "ok" if reason == "early_stopping" else "stopped",
+            "stop_reason": reason,
+            "epochs_done": 5,
+            "checkpoint_path": str(checkpoint_dir / "v1.pt"),
+            "metrics": {"best_val_loss": val_loss, "balanced_accuracy": 0.4},
+        }
+
+    return child
+
+
+def _restart_config():
+    from crypto_neural.training import TrainConfig
+
+    return TrainConfig(window=16, patience=10, seed=7)
+
+
+def test_restarts_keep_the_attempt_with_the_lowest_validation_loss(tmp_path, monkeypatch):
+    from crypto_neural.server import tasks
+
+    ctx, seen = _FakeCtx(), []
+    outcomes = [(1.10, "early_stopping"), (1.02, "early_stopping"), (1.05, "time_budget")]
+    monkeypatch.setattr(tasks, "train_child", _fake_child(outcomes, ctx, seen))
+    result = tasks._train_with_restarts(_restart_config(), tmp_path / "d.parquet", [], tmp_path, ctx)
+
+    assert [s["seed"] for s in seen] == [7, 8, 9]  # a new seed each attempt
+    assert [s["offset"] for s in seen] == [0, 5, 10]  # live epochs keep rising
+    assert result["metrics"]["chosen_attempt"] == 2
+    assert result["metrics"]["attempts"] == 3
+    assert result["checkpoint_path"].endswith("attempt-2/v1.pt")
+    assert result["epochs_done"] == 15
+    assert result["stop_reason"] == "time_budget"  # the run ended on time
+    # Only the kept attempt's checkpoints stay on disk.
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_dir()) == ["attempt-2"]
+
+
+def test_restarts_end_when_stop_is_pressed(tmp_path, monkeypatch):
+    from crypto_neural.server import tasks
+
+    ctx, seen = _FakeCtx(stop_after=2), []
+    outcomes = [(1.1, "early_stopping")] * 5
+    monkeypatch.setattr(tasks, "train_child", _fake_child(outcomes, ctx, seen))
+    result = tasks._train_with_restarts(_restart_config(), tmp_path / "d.parquet", [], tmp_path, ctx)
+    assert len(seen) == 2 and result["metrics"]["chosen_attempt"] == 1
+
+
+def test_restarts_need_patience_to_mean_anything():
+    """Patience 0 means an attempt never stalls, so it would never restart."""
+    from crypto_neural.server.tasks import RESTART_PATIENCE, training_patience
+
+    assert training_patience({"patience": 0, "restarts": True}) == RESTART_PATIENCE > 0
+    assert training_patience({"patience": 4, "restarts": True}) == 4
+    assert training_patience({"patience": 0, "restarts": False}) == 0

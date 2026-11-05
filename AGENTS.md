@@ -36,7 +36,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # training only
 .venv/bin/python run.py                    # HTTP UI + API on https://<lan-ip>:8443/
-.venv/bin/pytest                           # 161 tests, no network
+.venv/bin/pytest                           # 164 tests, no network
 ```
 
 Headless equivalents (use these in CI, cron, and agent verification):

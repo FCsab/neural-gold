@@ -114,6 +114,13 @@
         </select>
         <span class="hint">best weights are kept whenever it stops</span>
       </label>
+      <label>When it stops improving
+        <select id="train-restarts">
+          <option value="1" selected>start a fresh model</option>
+          <option value="">keep training it</option>
+        </select>
+        <span class="hint">after 10 epochs with no new best; the best attempt is kept</span>
+      </label>
     </form>
     <div class="actions">
       <button class="primary" id="run-train">Train and test</button>
@@ -126,7 +133,8 @@
     <p class="sentence" id="live-verdict"></p>
     <p class="hint">Updates every two seconds while a model trains. Each point is one pass
       over the training data (an epoch). The held-out data is never trained on, so it shows
-      whether the model is learning something general or only memorising.</p>
+      whether the model is learning something general or only memorising. When a
+      stalled model is replaced by a fresh one, the lines jump: that is the new model starting.</p>
     <h3 class="chart-title">Error, lower is better</h3>
     <p class="legend"><span><i class="s-hold"></i>on the data it trains on</span><span><i class="s-model"></i>on held-out data</span></p>
     <div id="live-loss" class="chart small"></div>

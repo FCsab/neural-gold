@@ -281,6 +281,16 @@ SERIES_KEYS = (
     "epoch", "train_loss", "val_loss", "val_balanced_accuracy",
     "baseline_balanced_accuracy", "best_epoch", "elapsed_s",
 )
+# Epochs without a new validation low before an attempt is given up and a
+# fresh one starts (``restarts``). Matches the live card's "memorising" line.
+RESTART_PATIENCE = 10
+
+
+def training_patience(params: dict[str, Any]) -> int:
+    """Patience 0 means "never stall"; with restarts on, an attempt that
+    never stalls would never be replaced, so the restart patience applies."""
+    patience = int(params.get("patience") or 0)
+    return patience or (RESTART_PATIENCE if params.get("restarts") else 0)
 
 
 def train_child(
@@ -292,8 +302,14 @@ def train_child(
     *,
     prefix: str = "",
     manage_progress: bool = True,
+    attempt: int = 0,
+    epoch_offset: int = 0,
 ) -> dict[str, Any]:
-    """Run one training job in a spawned child and return its result payload."""
+    """Run one training job in a spawned child and return its result payload.
+
+    ``attempt`` and ``epoch_offset`` place a restarted attempt after the
+    earlier ones in the job's live series, whose epochs must keep rising.
+    """
 
     import multiprocessing
     import queue as queue_module
@@ -360,7 +376,14 @@ def train_child(
         kind = message.get("type")
         if kind == "progress":
             text = message.get("message") or "training"
-            ctx.point({key: message.get(key) for key in SERIES_KEYS})
+            point = {key: message.get(key) for key in SERIES_KEYS}
+            if attempt:
+                text = f"attempt {attempt} · {text}"
+                point["attempt"] = attempt
+                for key in ("epoch", "best_epoch"):
+                    if point.get(key) is not None:
+                        point[key] = float(point[key]) + epoch_offset
+            ctx.point(point)
             if manage_progress:
                 total = int(message.get("epochs_total") or 0)
                 if total > 0:
@@ -395,6 +418,92 @@ def train_child(
     return result_payload
 
 
+def _train_with_restarts(
+    train_config, dataset_path: Path, feature_names: list[str], checkpoint_dir: Path, ctx
+) -> dict[str, Any]:
+    """Train, and start over with a new seed whenever an attempt stalls.
+
+    An attempt ends when its validation loss has not reached a new low for
+    ``train_config.patience`` epochs. While time is left and nobody pressed
+    Stop, a fresh model with the next seed takes over. The attempt kept is the
+    one with the lowest *validation* loss: the test slice plays no part in the
+    choice, and only the kept attempt's test metrics are ever reported, so
+    the backtest that follows is still on data nothing was chosen by.
+
+    Choosing the best of many seeds on one validation slice flatters that
+    slice a little; the attempt count is recorded in the metrics so a reader
+    can weigh it.
+    """
+    import shutil
+
+    budget = train_config.max_minutes
+    started = time.monotonic()
+    best: dict[str, Any] | None = None
+    best_dir: Path | None = None
+    chosen = 0
+    summary: list[dict[str, Any]] = []
+    offset = 0
+    attempt = 0
+    while True:
+        attempt += 1
+        remaining = None
+        if budget:
+            remaining = budget - (time.monotonic() - started) / 60.0
+            if remaining < 0.1:
+                break
+        attempt_dir = checkpoint_dir / f"attempt-{attempt}"
+        config = replace(
+            train_config, seed=train_config.seed + attempt - 1, max_minutes=remaining
+        )
+        payload = train_child(
+            config, dataset_path, feature_names, attempt_dir, ctx,
+            attempt=attempt, epoch_offset=offset,
+        )
+        offset += int(payload.get("epochs_done") or 0)
+        val_loss = (payload.get("metrics") or {}).get("best_val_loss")
+        summary.append({
+            "attempt": attempt,
+            "seed": config.seed,
+            "epochs": int(payload.get("epochs_done") or 0),
+            "best_val_loss": val_loss,
+            "stop_reason": payload.get("stop_reason"),
+        })
+        ctx.log(
+            f"attempt {attempt} (seed {config.seed}): {payload.get('stop_reason')} after "
+            f"{payload.get('epochs_done')} epochs, best validation loss {val_loss}"
+        )
+        usable = payload.get("checkpoint_path") is not None and val_loss is not None
+        best_val = (best or {}).get("metrics", {}).get("best_val_loss")
+        if usable and (best is None or val_loss < best_val):
+            if best_dir is not None:
+                shutil.rmtree(best_dir, ignore_errors=True)
+            best, best_dir, chosen = payload, attempt_dir, attempt
+        else:
+            shutil.rmtree(attempt_dir, ignore_errors=True)
+        if payload.get("stop_reason") != "early_stopping" or ctx.should_stop():
+            break
+
+    if best is None:
+        if summary:
+            # Nothing finished an epoch; hand back the last attempt's
+            # "no checkpoint" result so the caller records a draft.
+            return {**payload, "attempts": summary}
+        raise RuntimeError("the time budget ran out before the first attempt started")
+    ctx.log(f"kept attempt {chosen} of {len(summary)}, chosen by validation loss only")
+    metrics = {**best["metrics"], "attempts": len(summary), "chosen_attempt": chosen}
+    return {
+        **best,
+        "metrics": metrics,
+        "attempts": summary,
+        "epochs_done": offset,
+        "duration_s": round(time.monotonic() - started, 2),
+        # The run as a whole ended for the last attempt's reason (time, Stop);
+        # the status is the kept model's own: did *it* run to convergence.
+        "stop_reason": payload.get("stop_reason"),
+        "status": best.get("status"),
+    }
+
+
 def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, Any]:
     """Train a model in a child process, honouring a time budget and Stop."""
     import pyarrow.parquet as pq
@@ -424,7 +533,7 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         lr=float(params.get("lr", 3e-4)),
         dropout=float(params.get("dropout", 0.1)),
         weight_decay=float(params.get("weight_decay", 1e-4)),
-        patience=int(params.get("patience", 0)),
+        patience=training_patience(params),
         seed=int(params.get("seed", 7)),
         max_minutes=float(params["minutes"]) if params.get("minutes") else None,
         device=str(params.get("device", "auto")),
@@ -462,14 +571,19 @@ def run_training(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
     )
 
     try:
-        result_payload = train_child(
-            train_config,
-            dataset_path,
-            feature_names,
-            checkpoint_dir,
-            ctx,
-            prefix=f"model {model_id}",
-        )
+        if params.get("restarts"):
+            result_payload = _train_with_restarts(
+                train_config, dataset_path, feature_names, checkpoint_dir, ctx
+            )
+        else:
+            result_payload = train_child(
+                train_config,
+                dataset_path,
+                feature_names,
+                checkpoint_dir,
+                ctx,
+                prefix=f"model {model_id}",
+            )
     except Exception:
         registry.update_model(model_id, status="failed")
         registry.record_run(

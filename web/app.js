@@ -484,8 +484,21 @@ function trainAndTest() {
     {
       label: "Train",
       stoppable: true,
-      start: () => post("/api/train/start", { minutes: minutes === "" ? null : Number(minutes), epochs: 0, patience: 0 }),
-      summary: (job) => (job.result ? `${fmtInt(job.result.epochs_done)} epochs` : ""),
+      start: () =>
+        post("/api/train/start", {
+          minutes: minutes === "" ? null : Number(minutes),
+          epochs: 0,
+          patience: 0,
+          restarts: $("train-restarts").value === "1",
+        }),
+      summary: (job) => {
+        const result = job.result;
+        if (!result) return "";
+        const tries = (result.attempts || []).length;
+        return tries > 1
+          ? `${fmtInt(result.epochs_done)} epochs over ${tries} attempts; kept attempt ${result.metrics.chosen_attempt}`
+          : `${fmtInt(result.epochs_done)} epochs`;
+      },
     },
     {
       label: "Backtest on unseen data",
@@ -603,26 +616,33 @@ function epochChart(container) {
 
 function liveVerdict(job, points) {
   const last = points[points.length - 1];
-  const best = Number(last.best_epoch) || 0;
+  // The kept weights are those with the lowest held-out error, across every
+  // attempt when stalled models are restarted.
+  const bestPoint = points.reduce((a, p) => (Number(p.val_loss) < Number(a.val_loss) ? p : a), points[0]);
+  const best = Number(bestPoint.epoch);
   const since = Number(last.epoch) - best;
-  const bestPoint = points.find((p) => Number(p.epoch) === best) || last;
-  const minutes = isNum(last.elapsed_s) ? Math.round(Number(last.elapsed_s) / 60) : null;
+  const end = isLive(job) ? Date.now() / 1000 : job.finished_at;
+  const minutes = job.started_at && end ? Math.round((end - job.started_at) / 60) : null;
   const where = isLive(job) ? "Training" : "Finished";
-  const head = `${where}: epoch ${fmtInt(last.epoch)}${minutes !== null ? `, ${minutes} min in` : ""}.`;
+  const attempt = isNum(last.attempt) ? `, attempt ${fmtInt(last.attempt)}` : "";
+  const kept = isNum(bestPoint.attempt) ? `, attempt ${fmtInt(bestPoint.attempt)}` : "";
+  const head = `${where}: epoch ${fmtInt(last.epoch)}${attempt}${minutes !== null ? `, ${minutes} min in` : ""}.`;
   const score = Number(bestPoint.val_balanced_accuracy);
   const guess = Number(bestPoint.baseline_balanced_accuracy);
   const gap = (score - guess) * 100;
   let tone = "bad";
-  let skill = `At its best epoch (${fmtInt(best)}) it scores ${fmtPct(score)} on held-out data, no better than always guessing the same answer (${fmtPct(guess)}).`;
+  let skill = `At its best (epoch ${fmtInt(best)}${kept}) it scores ${fmtPct(score)} on held-out data, no better than always guessing the same answer (${fmtPct(guess)}).`;
   if (gap >= 5) {
     tone = "ok";
-    skill = `At its best epoch (${fmtInt(best)}) it scores ${fmtPct(score)} on held-out data, against ${fmtPct(guess)} for always guessing the same answer.`;
+    skill = `At its best (epoch ${fmtInt(best)}${kept}) it scores ${fmtPct(score)} on held-out data, against ${fmtPct(guess)} for always guessing the same answer.`;
   } else if (gap >= 2) {
     tone = "";
-    skill = `At its best epoch (${fmtInt(best)}) it scores ${fmtPct(score)} on held-out data, slightly above ${fmtPct(guess)} for always guessing; that rarely survives fees.`;
+    skill = `At its best (epoch ${fmtInt(best)}${kept}) it scores ${fmtPct(score)} on held-out data, slightly above ${fmtPct(guess)} for always guessing; that rarely survives fees.`;
   }
   let trend = "";
-  if (since >= 10) {
+  if (isNum(last.attempt) && last.attempt > 1) {
+    trend = ` ${fmtInt(last.attempt - 1)} stalled model${last.attempt > 2 ? "s were" : " was"} replaced by a fresh one; the best of all attempts is kept.`;
+  } else if (since >= 10) {
     trend = ` The held-out error has not improved for ${fmtInt(since)} epochs: from there on it was mostly memorising.`;
     if (isLive(job)) trend += " Stopping now keeps the best weights.";
   } else if (best && since === 0) {

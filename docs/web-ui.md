@@ -56,6 +56,16 @@ final verdict. Its opening sentence says the best epoch so far and whether the
 held-out error has stopped improving. The curves of the last run stay after it
 finishes, until the server restarts.
 
+**When it stops improving** decides what happens once the held-out error has
+not reached a new low for 10 epochs. "Start a fresh model" (the default)
+replaces it with a new one from the next random seed, as long as training time
+is left; "keep training it" carries on until the time is up. With restarts,
+the kept model is the attempt with the lowest *validation* loss. The test
+slice plays no part in that choice and the backtest runs once, on the kept
+model only. Only the kept attempt's checkpoints stay on disk, and the number
+of attempts is recorded with the model's metrics: picking the best of many
+seeds flatters the validation slice a little, which is worth knowing.
+
 The chain is driven by the page. If the tab closes mid-chain, the job in
 flight finishes but the next step is not started.
 
@@ -106,7 +116,7 @@ from other addresses get 403.
 | POST | `/api/dataset/preview` | label counts only → job |
 | POST | `/api/dataset/build` | build and write the dataset → job |
 | POST | `/api/leakage/run` | run the leakage suite → job |
-| POST | `/api/train/start` | `{minutes?, epochs, window, ...}` → training job |
+| POST | `/api/train/start` | `{minutes?, epochs, window, restarts?, ...}` → training job |
 | GET | `/api/train/status` | torch availability and dataset readiness |
 | POST | `/api/backtest/run` | `{model_id?, fee_bps, slippage_bps, ...}` → backtest job |
 | GET | `/api/backtest/last` | the persisted backtest report |

@@ -106,6 +106,9 @@ class TrainParams(BaseModel):
     weight_decay: float = Field(default=1e-4, ge=0.0, le=1.0)
     # 0 = no early stopping: a human ends the run.
     patience: int = Field(default=0, ge=0, le=1000)
+    # Start over with a new seed when an attempt stalls, keep the best by
+    # validation loss. Patience 0 then means the default restart patience.
+    restarts: bool = False
     seed: int = Field(default=7, ge=0, le=2**31 - 1)
     device: Literal["auto", "cpu"] = "auto"
 
