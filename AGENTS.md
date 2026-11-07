@@ -38,7 +38,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # training only
 .venv/bin/python run.py                    # HTTP UI + API on https://<lan-ip>:8443/
-.venv/bin/pytest                           # 178 tests, no network
+.venv/bin/pytest                           # 185 tests, no network
 ```
 
 Headless equivalents (use these in CI, cron, and agent verification):
@@ -51,6 +51,7 @@ Headless equivalents (use these in CI, cron, and agent verification):
 .venv/bin/python -m crypto_neural.cli risk   # needs 4h bars; logs the next-bar reading
 .venv/bin/python -m crypto_neural.cli paper  # score the predictions log
 .venv/bin/python -m crypto_neural.cli funding  # pre-registered funding test; run once
+.venv/bin/python -m crypto_neural.cli volsize  # pre-registered volatility-sizing test; run once
 .venv/bin/python scripts/smoke.py          # against a running server
 ```
 
@@ -78,6 +79,7 @@ crypto_neural/
   model.py             window transformer + real GPU probe
   training.py          child-process training loop: budget, stop, metrics
   backtest.py          trade simulation with fees and slippage
+  volsizing.py         pre-registered volatility-sizing walk-forward
   risk.py              drawdown-risk walk-forward: purged folds, past-only
                        rule choice, placebo, baselines, next-bar reading
   predictions.py       predictions log (first reading per bar wins) and the

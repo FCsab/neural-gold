@@ -243,6 +243,35 @@ def cmd_paper(args: argparse.Namespace, config: AppConfig) -> int:
     return 0
 
 
+def cmd_volsize(args: argparse.Namespace, config: AppConfig) -> int:
+    """The pre-registered volatility-sizing test (docs/risk.md, 2026-11-07).
+
+    Uses the stored ``risk.interval`` bars of ``risk.data_symbol`` and the
+    risk model's folds and costs. Records nothing in the predictions log.
+    """
+    from .server import reports
+    from .volsizing import run_vol_sizing
+
+    risk = config.risk
+    local = replace(
+        config,
+        exchange=replace(config.exchange, symbol=risk.data_symbol, interval=risk.interval),
+    )
+    bars = _load_bars(local)
+    bars_per_day = 86_400_000 // interval_to_ms(risk.interval)
+    report = run_vol_sizing(
+        bars,
+        risk,
+        config.features,
+        bars_per_year=365.0 * bars_per_day,
+        progress=lambda fraction, message: print(f"  {fraction:4.0%} {message}"),
+    )
+    print(report.format())
+    path = reports.write_report(config, "volsizing", report.to_dict())
+    print(f"\nreport written: {path}")
+    return 0
+
+
 def cmd_funding(args: argparse.Namespace, config: AppConfig) -> int:
     """The pre-registered funding-rate experiment (docs/risk.md, 2026-11-05).
 
@@ -350,6 +379,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-refresh", action="store_true", help="use stored bars and settlements only"
     )
     p_fund.set_defaults(func=cmd_funding)
+
+    p_vol = sub.add_parser(
+        "volsize", help="run the pre-registered volatility-sizing test once (4h bars)"
+    )
+    p_vol.set_defaults(func=cmd_volsize)
 
     p_paper = sub.add_parser("paper", help="score the predictions log (no orders, ever)")
     p_paper.add_argument("--out", default=None)
