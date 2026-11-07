@@ -207,6 +207,32 @@ losing the timeout class almost entirely (14.6% recall). Training loss falls
 monotonically as validation flattens and turns up — a small model beginning to
 memorise, not an undertrained one.
 
+### Is the network the bottleneck? (2026-11-07, BTCUSDT)
+
+No. `scripts/direction_check.py` trains LightGBM on the dataset's valid
+rows, with the same 70/15/15 chronological split and purge, and the current
+row's features only:
+
+```
+test rows                                    145,288
+LightGBM balanced accuracy                   0.3845  (constant guess 0.3333)
+transformer, same target (latest run)        0.387
+AUC barrier hit vs timeout  (volatility)     0.62
+AUC up vs stop among hits   (direction)      0.52
+```
+
+A tree model with no sequence modelling matches the transformer, and what both
+learn is *whether* a barrier is hit, which is volatility, not *which*
+one. The features ranked by gain are volatility measures (`atr_pct`,
+`range_ma`, `rv_48`). A long-only trade is paid only for direction.
+
+The cost makes this final at five minutes. On the median bar the target is
++0.40% and the stop −0.30%; with 24 bps per round trip, a trade breaks even
+only if "up" is about 77% likely, against a 30% base rate. A direction AUC of
+0.52 is nowhere near that, which is why the expected-value backtest found no
+bar worth buying. Rewriting the network, or tuning it, cannot change either
+number: they are properties of the target and the features.
+
 Stopping an unbounded run: start → 1 epoch in 20 s → **Stop** → checkpoint
 written, `stop_reason=stopped`, job status `stopped`.
 
