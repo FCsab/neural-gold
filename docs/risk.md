@@ -327,3 +327,54 @@ What the result does *not* say:
   68% against 60%) are modest. No variants (other windows, open interest,
   basis) are to be tried on this period; doing so now would be choosing
   after seeing.
+
+## Volatility sizing: pre-registration (2026-11-07)
+
+Written before any code for it ran on real data, and committed separately
+so the history shows that.
+
+**Why this.** On 5-minute bars a tree model matches the transformer, and
+both predict *whether* price moves (barrier hit vs timeout, AUC 0.62), not
+*which way* (AUC 0.52; `docs/training.md`). On 4h bars the crash-risk model
+predicts large falls (AUC 0.65), and much of that is telling calm periods
+from turbulent ones. Volatility is the one thing the models here demonstrably
+forecast. A long-only holder can use it without forecasting direction: hold
+less when the next day is expected to be turbulent. Volatility-managed
+portfolios are known to improve risk-adjusted returns on other assets. On BTC
+it is untested here.
+
+**Design, fixed now.**
+
+- Data: BTCUSDT 4h bars after the last gap longer than 7 days. The same
+  expanding folds as the risk model: one year (2,190 bars) before the first
+  90-day (540-bar) test block, abutting blocks, `RiskConfig` defaults.
+- Target: log realised volatility of the returns a position decided at bar
+  *t* earns over the next day: `log(sqrt(sum r²))` over the six open-to-open
+  log returns from `open[t]` to `open[t+6]`. The label at *t* is decided at
+  bar *t+6*. Training rows whose label reaches into the test block are purged.
+- Features: the risk model's default feature set (lag 1, look-ahead checked).
+- Model: LightGBM regression on the target, with the risk model's
+  regularised tree settings, averaged over its 5 seeds.
+- No-model forecast: EWMA (span 30 bars) of squared 4h log returns through
+  bar *t−1*, scaled to six bars: `log(sqrt(6 * ewma_var))`.
+- Sizing, the same for both forecasts: weight `min(1, target / forecast)`,
+  with no leverage and no shorting. `target` for each block is the median
+  forecast over that block's training rows, so it comes from the past only.
+  A trade happens only if the weight moves by at least 0.10 from the current
+  position. Every change in position pays 10 + 2 bps on the amount traded.
+- Arms: hold (weight 1), EWMA-sized, model-sized. All three run over the same
+  out-of-sample bars.
+
+**Decision rule.** Volatility sizing with the model counts as working only if
+all four hold over the whole out-of-sample period:
+
+1. The model forecasts better than EWMA: lower mean squared error of log
+   volatility on the pooled test rows, *and* lower in at least 60% of blocks.
+2. Model-sized Sharpe is above both hold's and EWMA-sized.
+3. Model-sized worst drop is smaller than hold's.
+4. Model-sized timing beats chance: the shifted-path placebo p ≤ 0.05.
+
+If 2 to 4 hold for EWMA-sized but 1 fails, the result is that sizing works
+and the model adds nothing over a formula. That still counts as a result,
+reported as such. It runs once. No other spans, horizons, bands or targets
+get tried on this period.
