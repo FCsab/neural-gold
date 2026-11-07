@@ -56,6 +56,25 @@ The verdict the UI shows:
 > while a round trip costs 24 bps in fees and slippage. No model can be
 > profitable at these label settings.
 
+### BTC, expected-value rule (2026-11-06)
+
+Model `BTCUSDC-5m-w64-20261106-105654` (status `draft`; trained on BTCUSDT
+bars per `data.training_symbol`, the name carries the traded pair), test
+window 2025-06-20 → 2026-11-06 (145,244 scored rows), 10 bps fee + 2 bps
+slippage per side, `entry_rule: expected_value`:
+
+```
+bars where the expected gain beat the 24 bps round trip   0
+trades                                                    0
+buy and hold                                              -27.5%
+```
+
+No bar cleared the cost, so the rule stayed out of the market: the
+0.0% return comes from never trading, not from any skill. On the same test rows
+the model was right 38.5% of the time against 48.0% for always guessing the
+commonest outcome. Under the old argmax rule an earlier BTCUSDC model made
+3,043 trades and lost 99.9%.
+
 ## Why -100% is the right answer here, not a bug
 
 The default label configuration is `k_up = 2.0`, `k_down = 1.5`
