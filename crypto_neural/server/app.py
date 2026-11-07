@@ -33,7 +33,7 @@ from .. import __version__
 from ..config import AppConfig, ConfigError, FeatureConfig, LabelConfig
 from ..data.store import store_from_config
 from ..exchange.rest import interval_to_ms
-from ..registry import registry_from_config
+from ..registry import compare_to_baselines, registry_from_config
 from . import reports, tasks
 from .jobs import JobManager
 from .scheduler import ReadingScheduler
@@ -410,7 +410,10 @@ def create_app(
     @app.get("/api/models")
     def list_models(_: None = Depends(auth)) -> dict[str, Any]:
         registry = registry_from_config(config)
-        return {"models": registry.list_models(limit=50)}
+        models = registry.list_models(limit=50)
+        for model in models:
+            model["comparison"] = compare_to_baselines(model.get("metrics"))
+        return {"models": models}
 
     @app.get("/api/models/{model_id}")
     def get_model(model_id: str, _: None = Depends(auth)) -> dict[str, Any]:

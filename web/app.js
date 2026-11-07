@@ -729,13 +729,22 @@ function renderBacktestChart() {
 function renderModels() {
   const models = state.models || [];
   $("model-count").textContent = models.length ? `(${models.length})` : "";
+  const vs = (value, base, beats) =>
+    isNum(value)
+      ? `<span class="${beats ? "pos" : "neg"}">${fmtPct(value)}</span> <span class="muted">vs ${fmtPct(base)}</span>`
+      : "–";
   $("models").innerHTML = models.length
-    ? "<thead><tr><th>model</th><th>verdict</th><th class='num'>score</th><th>when</th></tr></thead><tbody>" +
+    ? "<thead><tr><th>model</th><th>status</th><th>verdict</th>" +
+      "<th class='num'>right how often</th><th class='num'>per outcome</th><th>when</th></tr></thead><tbody>" +
       models
         .map((m) => {
-          const metrics = m.metrics || {};
-          const verdict = m.status === "candidate" ? "beat guessing" : "no better than guessing";
-          return `<tr><td>${esc(m.name)}</td><td>${verdict}</td><td class="num">${fmtPct(metrics.balanced_accuracy)}</td><td>${fmtDate(m.created_at)}</td></tr>`;
+          const c = m.comparison || {};
+          return (
+            `<tr><td>${esc(m.name)}</td><td>${esc(m.status)}</td><td>${esc(c.verdict || "")}</td>` +
+            `<td class="num">${vs(c.accuracy, c.majority_accuracy, c.beats_majority)}</td>` +
+            `<td class="num">${vs(c.balanced_accuracy, c.chance_balanced_accuracy, c.beats_balanced)}</td>` +
+            `<td>${fmtDate(m.created_at)}</td></tr>`
+          );
         })
         .join("") +
       "</tbody>"

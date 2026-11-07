@@ -237,3 +237,43 @@ class Registry:
 
 def registry_from_config(config) -> Registry:
     return Registry(config.data_root / "registry.sqlite")
+
+
+def compare_to_baselines(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    """A model's test metrics set against the two "guessing" baselines.
+
+    ``candidate`` status is earned on balanced accuracy alone (above 1/3 by
+    0.05), where always guessing the commonest outcome scores exactly 1/3.
+    On plain accuracy that same guess scores the commonest outcome's share,
+    and every BTC model so far has lost to it. Calling such a model "better
+    than guessing" without saying which guess hides the more damning number,
+    so both are reported and the verdict names the one it fails.
+    """
+    m = metrics or {}
+    acc, base = m.get("accuracy"), m.get("baseline_accuracy")
+    bal, bal_base = m.get("balanced_accuracy"), m.get("baseline_balanced_accuracy")
+    if acc is None or base is None or bal is None or bal_base is None:
+        return {"verdict": "not tested", "beats_majority": None, "beats_balanced": None}
+    beats_majority = float(acc) > float(base)
+    beats_balanced = bool(m.get("beats_baseline"))
+    if beats_majority and beats_balanced:
+        verdict = "beats both kinds of guessing"
+    elif beats_balanced:
+        verdict = (
+            "better than chance per outcome, but less often right than always "
+            "guessing the commonest outcome"
+        )
+    elif beats_majority:
+        verdict = "right more often than the commonest-outcome guess, no better per outcome"
+    else:
+        verdict = "no better than guessing"
+    return {
+        "verdict": verdict,
+        "beats_majority": beats_majority,
+        "beats_balanced": beats_balanced,
+        "accuracy": acc,
+        "majority_accuracy": base,
+        "balanced_accuracy": bal,
+        "chance_balanced_accuracy": bal_base,
+        "signal_edge": m.get("signal_edge"),
+    }

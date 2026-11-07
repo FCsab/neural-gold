@@ -197,7 +197,7 @@ its honest result are in `docs/training.md`.
 
 ## Not built yet
 
-The rest of step 2 (compare view, shadow/live promotion),
+The rest of step 2 (shadow/live promotion),
 then steps 4-8: paper execution, fill-simulation gate, live orders, drift
 loop, dashboard polish. The plan's rule stands: no live order until paper
 P&L and the walk-forward simulation agree within ~20% on the same date

@@ -266,6 +266,9 @@ def test_training_job_trains_and_registers_a_model(seeded_client: TestClient):
     stored = next(model for model in models if model["id"] == result["model_id"])
     assert stored["status"] in {"candidate", "draft"}
     assert stored["window"] == 16
+    # Each model comes with its comparison against both guessing baselines.
+    assert stored["comparison"]["verdict"]
+    assert stored["comparison"]["majority_accuracy"] == stored["metrics"]["baseline_accuracy"]
 
 
 def test_stop_requests_are_honoured(seeded_client: TestClient):

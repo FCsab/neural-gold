@@ -88,3 +88,31 @@ def test_ids_are_prefixed_and_unique():
     first, second = new_id("model"), new_id("model")
     assert first.startswith("model_")
     assert first != second
+
+
+def test_a_candidate_that_loses_to_the_majority_guess_says_so():
+    from crypto_neural.registry import compare_to_baselines
+
+    # The shape of the real BTCUSDC candidates: balanced accuracy clears the
+    # bar, plain accuracy loses to always guessing the commonest outcome.
+    c = compare_to_baselines({
+        "accuracy": 0.4168, "baseline_accuracy": 0.5514, "balanced_accuracy": 0.4616,
+        "baseline_balanced_accuracy": 1 / 3, "beats_baseline": True,
+    })
+    assert c["beats_balanced"] is True and c["beats_majority"] is False
+    assert "less often right" in c["verdict"]
+
+
+def test_comparison_verdicts_cover_every_case():
+    from crypto_neural.registry import compare_to_baselines
+
+    base = {"baseline_accuracy": 0.5, "baseline_balanced_accuracy": 1 / 3,
+            "balanced_accuracy": 0.4}
+    both = compare_to_baselines({**base, "accuracy": 0.6, "beats_baseline": True})
+    neither = compare_to_baselines({**base, "accuracy": 0.4, "beats_baseline": False})
+    majority_only = compare_to_baselines({**base, "accuracy": 0.6, "beats_baseline": False})
+    assert both["verdict"] == "beats both kinds of guessing"
+    assert neither["verdict"] == "no better than guessing"
+    assert majority_only["beats_majority"] and not majority_only["beats_balanced"]
+    assert compare_to_baselines(None)["verdict"] == "not tested"
+    assert compare_to_baselines({})["beats_majority"] is None
