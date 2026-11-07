@@ -182,6 +182,19 @@ def _resolve_features(config: AppConfig, params: DatasetParams) -> FeatureConfig
 # --------------------------------------------------------------------------
 # app factory
 # --------------------------------------------------------------------------
+async def _until_closed(websocket: WebSocket) -> None:
+    """Return once the client has gone. The UI never sends anything, so any
+    message other than a disconnect is ignored."""
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError: receive() after the socket was closed server-side.
+        return
+
+
 def create_app(
     config: AppConfig,
     manager: JobManager | None = None,
@@ -480,18 +493,32 @@ def create_app(
             return
 
         await websocket.accept()
+        # Reading is the only way a clean close is noticed; without it the
+        # loop would keep snapshotting for a socket nobody holds.
+        closed = asyncio.create_task(_until_closed(websocket))
         last_payload = ""
         try:
-            while True:
+            while not closed.done():
                 payload = json.dumps(
                     manager.snapshot(include_log=False), default=str, sort_keys=True
                 )
                 if payload != last_payload:
-                    await websocket.send_text(json.dumps({"type": "jobs", "jobs": json.loads(payload)}))
+                    message = json.dumps({"type": "jobs", "jobs": json.loads(payload)})
+                    try:
+                        await websocket.send_text(message)
+                    except RuntimeError:
+                        # uvicorn raises this, not WebSocketDisconnect, when it
+                        # has closed the socket itself: a keepalive ping timed
+                        # out (a sleeping laptop, a backgrounded phone tab)
+                        # and, over TLS, the close is still in progress. The
+                        # client is gone either way.
+                        return
                     last_payload = payload
-                await asyncio.sleep(0.5)
+                await asyncio.wait({closed}, timeout=0.5)
         except WebSocketDisconnect:
             return
+        finally:
+            closed.cancel()
 
     # -- static UI -------------------------------------------------------
     @app.get("/favicon.ico", include_in_schema=False)

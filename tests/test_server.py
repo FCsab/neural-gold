@@ -214,6 +214,34 @@ def test_websocket_streams_jobs(client: TestClient):
         assert message["jobs"] == []
 
 
+def test_websocket_ends_quietly_when_uvicorn_already_closed_it(client, monkeypatch):
+    """A client that stops answering pings (a sleeping laptop) is closed by
+    uvicorn itself; over TLS the next send then raises RuntimeError rather
+    than WebSocketDisconnect. That is a gone client, not a server error."""
+    from starlette.websockets import WebSocket
+
+    real_send = WebSocket.send_text
+    sends = []
+
+    async def send_text(self, data):
+        sends.append(data)
+        if len(sends) > 1:
+            raise RuntimeError(
+                "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'."
+            )
+        await real_send(self, data)
+
+    monkeypatch.setattr(WebSocket, "send_text", send_text)
+    # Leaving the block re-raises anything the handler raised.
+    with client.websocket_connect("/api/ws") as socket:
+        assert socket.receive_json()["jobs"] == []
+        client.post("/api/data/verify", json={})  # a job change forces a send
+        deadline = time.monotonic() + 10
+        while len(sends) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert len(sends) == 2
+
+
 # -- training --------------------------------------------------------------
 def _build_dataset(client: TestClient) -> None:
     job_id = client.post("/api/dataset/build", json={}).json()["job_id"]
