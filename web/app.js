@@ -850,6 +850,12 @@ function renderPaper() {
     tile("Readings on time", `${fmtInt(paper.on_time)} of ${fmtInt(paper.readings)}`) +
     "</div>" +
     forecast +
+    (paper.gate && paper.gate.text
+      ? `<p class="sentence"><strong>Live-order gate</strong> (paper and simulation agree within ` +
+        `${Math.round(Number(paper.gate.tolerance) * 100)}% on the same dates): ${esc(paper.gate.text)}. ` +
+        `The simulation trades the same readings at their own bar's open, as the walk-forward does; ` +
+        `passing says execution matches, not that the rule beats holding.</p>`
+      : "") +
     `<p class="hint">${esc(paper.first_bar || "")} to ${esc(paper.last_bar || "")}. Between readings ` +
     `the position is held, as someone following the log would hold it on days nothing ran.</p>`;
   const rows = (paper.rows || []).slice().reverse();

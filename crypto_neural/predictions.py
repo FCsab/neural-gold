@@ -41,6 +41,16 @@ from .risk import _auc, net_returns, performance
 # that open. Ten minutes on a 4h bar is generous without being a loophole.
 GRACE_MS = 10 * 60 * 1000
 
+# The plan's gate, fixed here before any record is long enough to judge:
+# paper P&L within 20% of the simulation over the same dates, on at least 90
+# days, with an on-time reading for at least 90% of the bars. P&L near zero
+# makes any ratio explode, so the gap is measured against at least 1% of
+# capital. Changing these after seeing a record would manufacture a pass.
+GATE_TOLERANCE = 0.20
+GATE_MIN_DAYS = 90.0
+GATE_MIN_COVERAGE = 0.90
+GATE_PNL_FLOOR = 0.01
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS predictions_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,6 +213,7 @@ class PaperReport:
     hold: dict[str, Any]
     verdict: str
     rows: list[dict[str, Any]] = field(default_factory=list)
+    gate: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -233,6 +244,8 @@ class PaperReport:
             )
         lines += [line("risk rule", self.risk_rule), line("trend rule", self.trend_rule),
                   line("hold", self.hold)]
+        if self.gate:
+            lines.append(f"  gate: {self.gate['text']}")
         return "\n".join(lines)
 
 
@@ -280,6 +293,58 @@ def _paper_positions(
             pointer += 1
         positions[i] = current
     return positions
+
+
+def paper_gate(
+    paper_return: float,
+    simulated_return: float,
+    *,
+    days: float,
+    coverage: float,
+) -> dict[str, Any]:
+    """The plan's gate for one rule: does the paper record agree with the
+    simulation over the same dates?
+
+    The simulation trades the same readings the way the walk-forward does:
+    each one filled at its own bar's open. So the gap is what execution cost
+    — late readings, a job that did not run — and is exactly what the
+    walk-forward cannot see. It says nothing about whether the model has
+    skill; a rule can pass this gate and still lose to holding.
+    """
+    scale = max(abs(simulated_return), GATE_PNL_FLOOR)
+    gap = abs(paper_return - simulated_return) / scale
+    reasons = []
+    if days < GATE_MIN_DAYS:
+        reasons.append(f"{days:.0f} of {GATE_MIN_DAYS:.0f} days")
+    if coverage < GATE_MIN_COVERAGE:
+        reasons.append(
+            f"on-time readings for {coverage * 100:.0f}% of bars, need "
+            f"{GATE_MIN_COVERAGE * 100:.0f}%"
+        )
+    if gap > GATE_TOLERANCE:
+        reasons.append(
+            f"paper {paper_return * 100:+.2f}% vs simulated {simulated_return * 100:+.2f}%, "
+            f"a {gap * 100:.0f}% gap, allowed {GATE_TOLERANCE * 100:.0f}%"
+        )
+    passed = not reasons
+    text = (
+        f"PASS: paper {paper_return * 100:+.2f}% and simulated "
+        f"{simulated_return * 100:+.2f}% agree within {GATE_TOLERANCE * 100:.0f}% "
+        f"over {days:.0f} days"
+        if passed else "not met: " + "; ".join(reasons)
+    )
+    return {
+        "passed": passed,
+        "paper_return": round(float(paper_return), 6),
+        "simulated_return": round(float(simulated_return), 6),
+        "gap": round(float(gap), 4),
+        "days": round(float(days), 2),
+        "coverage": round(float(coverage), 4),
+        "tolerance": GATE_TOLERANCE,
+        "min_days": GATE_MIN_DAYS,
+        "min_coverage": GATE_MIN_COVERAGE,
+        "text": text,
+    }
 
 
 def score_paper(
@@ -354,8 +419,10 @@ def score_paper(
     bar_returns[:-1] = opens[1:] / opens[:-1] - 1.0
     cost = (fee_bps + slippage_bps) / 10_000.0
 
-    def path(actions: list[str]) -> tuple[np.ndarray, dict[str, Any]]:
-        positions = _paper_positions(fills[valid], actions, window)
+    def path(
+        actions: list[str], at: np.ndarray | None = None
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        positions = _paper_positions(fills[valid] if at is None else at, actions, window)
         positions = np.nan_to_num(positions, nan=1.0)
         returns = net_returns(positions, bar_returns, cost)
         return positions, performance(returns, positions, bars_per_year)
@@ -367,6 +434,15 @@ def score_paper(
     _, risk_stats = path(risk_actions)
     _, trend_stats = path(trend_actions)
     _, hold_stats = path(["long"] * int(valid.sum()))
+
+    # The simulation: the same readings, each filled at its own bar's open,
+    # as the walk-forward fills them.
+    own_bar = readings["for_bar_ms"].to_numpy(np.int64)[valid]
+    _, risk_sim = path(risk_actions, own_bar)
+    _, trend_sim = path(trend_actions, own_bar)
+    in_window = readings["for_bar_ms"].between(window[0], window[-1]).to_numpy()
+    timely = (readings["recorded_at_ms"] <= readings["for_bar_ms"] + grace_ms).to_numpy()
+    coverage = float((in_window & timely).sum()) / max(1, len(window))
 
     days = (window[-1] - window[0]) / 86_400_000 if len(window) > 1 else 0.0
     if days < 90:
@@ -415,6 +491,16 @@ def score_paper(
         hold=hold_stats,
         verdict=verdict,
         rows=rows[-200:],
+        gate={
+            **paper_gate(
+                risk_stats["total_return"], risk_sim["total_return"],
+                days=float(days), coverage=coverage,
+            ),
+            "trend_rule": paper_gate(
+                trend_stats["total_return"], trend_sim["total_return"],
+                days=float(days), coverage=coverage,
+            ),
+        },
     )
 
 

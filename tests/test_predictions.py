@@ -143,3 +143,54 @@ def test_no_readings_and_no_later_bar_are_reported_in_words():
     pending = score_paper(pd.DataFrame([reading(future, recorded=future + GRACE_MS + 5)]), bars,
                           fee_bps=10, slippage_bps=2, bars_per_year=BARS_PER_YEAR)
     assert pending.readings == 1 and "no bar has opened" in pending.verdict
+
+
+def test_gate_passes_only_with_enough_days_coverage_and_agreement():
+    from crypto_neural.predictions import paper_gate
+
+    ok = paper_gate(0.11, 0.10, days=120, coverage=0.95)
+    assert ok["passed"] and ok["gap"] == pytest.approx(0.1) and ok["text"].startswith("PASS")
+
+    short = paper_gate(0.10, 0.10, days=30, coverage=1.0)
+    assert not short["passed"] and "30 of 90 days" in short["text"]
+
+    patchy = paper_gate(0.10, 0.10, days=120, coverage=0.5)
+    assert not patchy["passed"] and "50% of bars" in patchy["text"]
+
+    apart = paper_gate(0.05, 0.10, days=120, coverage=1.0)
+    assert not apart["passed"] and apart["gap"] == pytest.approx(0.5)
+
+
+def test_gate_measures_a_near_zero_pnl_against_one_percent_of_capital():
+    from crypto_neural.predictions import paper_gate
+
+    # 0.1% vs 0.2% is a 50% ratio, but only 0.1% of capital apart.
+    near_zero = paper_gate(0.001, 0.002, days=120, coverage=1.0)
+    assert near_zero["passed"] and near_zero["gap"] == pytest.approx(0.1)
+
+
+def test_on_time_readings_match_the_simulation_and_late_ones_do_not():
+    bars = flat_bars([100.0] * 10 + [100.0 * 0.99**k for k in range(1, 31)])
+    t = bars["open_time"].to_numpy()
+    on_time = pd.DataFrame([reading(int(t[i]), "long" if i < 10 else "flat")
+                            for i in range(len(t))])
+    paper = score_paper(on_time, bars, fee_bps=10, slippage_bps=2, bars_per_year=BARS_PER_YEAR)
+    gate = paper.gate
+    assert gate["paper_return"] == gate["simulated_return"] and gate["gap"] == 0.0
+    assert gate["coverage"] == pytest.approx(1.0)
+    # Agreement alone is not enough: the record is minutes long.
+    assert not gate["passed"] and "of 90 days" in gate["text"]
+    assert "gate:" in paper.format() and "trend_rule" in gate
+
+    # Bar 10's flat call recorded an hour late: the paper record is long for
+    # one more falling bar (bar 11's on-time call takes it out), and the late
+    # bar does not count as covered.
+    late = on_time.copy()
+    late.loc[10, "recorded_at_ms"] = int(t[10]) + 12 * BAR_MS
+    late_gate = score_paper(late, bars, fee_bps=10, slippage_bps=2,
+                            bars_per_year=BARS_PER_YEAR).gate
+    assert late_gate["coverage"] < 1.0
+    assert late_gate["simulated_return"] == gate["simulated_return"]
+    assert late_gate["paper_return"] == pytest.approx(
+        (1 + gate["paper_return"]) * 0.99 - 1, abs=2e-4
+    )

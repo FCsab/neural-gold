@@ -242,6 +242,26 @@ after each 4h bar opens. Nothing in this path can place an order.
 The first reading was recorded on 2026-11-05 at 21:44 UTC for the 20:00
 bar: late, as manual runs are.
 
+### The gate, measured (added 2026-11-07)
+
+`score_paper` now reports `gate`: the paper path against a simulation of the
+same readings over the same dates, each filled at its own bar's open as the
+walk-forward fills it. The difference is what execution cost (late readings,
+runs that did not happen), which is the part a walk-forward cannot see. The
+thresholds were fixed in `predictions.py` before any record was long enough
+to judge, and must not move after one is:
+
+- at least **90 days** of record;
+- an on-time reading for at least **90% of the bars** in that window;
+- total return of paper and simulation within **20%**, measured against the
+  simulated P&L or 1% of capital, whichever is larger (a ratio of two
+  near-zero numbers means nothing).
+
+The gate is reported for the risk rule and, separately, for the trend rule.
+Passing it says the paper record matches the simulation, not that the rule
+beats holding; the walk-forward already says neither has an edge that is
+distinguishable from luck.
+
 ## Funding rates as new information: pre-registration (2026-11-05)
 
 Written before any funding data was downloaded or looked at.
