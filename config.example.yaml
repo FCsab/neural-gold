@@ -15,6 +15,10 @@ data:
   root: "data"
   # Bars are written one Parquet file per (year, month) partition.
   compression: "zstd"
+  # The series the 5-minute model learns from and is backtested on. BTCUSDT
+  # has continuous history from 2017; BTCUSDC here starts in 2024. Download it
+  # once with: CRYPTONEURAL_EXCHANGE_SYMBOL=BTCUSDT crypto-neural backfill --start 2017-08-17
+  training_symbol: "BTCUSDT"
 
 features:
   # 1 = features at bar t use data up to bar t-1 (strictly before the bar

@@ -226,3 +226,24 @@ def test_live_balanced_accuracy_agrees_with_the_final_metrics():
     assert round(guess, 4) == final["baseline_balanced_accuracy"]
     # Only the classes present count towards the guess.
     assert balanced_accuracy(np.array([1, 1, -1]), np.array([1, 1, 1]))[1] == 0.5
+
+
+def test_probabilities_undo_the_class_weights(prepared, tmp_path):
+    """The weighted loss inflates rare classes by their weight; the corrected
+    probabilities divide it back out, row by row, and still sum to one."""
+    import numpy as np
+
+    from crypto_neural.training import load_checkpoint, predict_proba
+
+    frame, features = prepared
+    result = train_model(frame, features, _config(epochs=1), tmp_path)
+    checkpoint = load_checkpoint(result.checkpoint_path)
+    weights = np.asarray(checkpoint["class_weights"])
+    assert weights.shape == (3,) and not np.allclose(weights, weights[0])
+
+    rows = np.arange(len(frame) - 50, len(frame))
+    raw = predict_proba(checkpoint, frame, rows, undo_class_weights=False)
+    fixed = predict_proba(checkpoint, frame, rows)
+    assert np.allclose(fixed.sum(axis=1), 1.0, atol=1e-5)
+    ratio = (raw / fixed) / (raw / fixed)[:, :1]
+    assert np.allclose(ratio, weights / weights[0], rtol=1e-4)

@@ -10,7 +10,7 @@ Environment variables are namespaced per section, e.g.
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Mapping, TypeVar
 
@@ -106,8 +106,19 @@ class ExchangeConfig:
 
 @dataclass(frozen=True)
 class DataConfig:
+    """Where bars live, and which series the 5-minute model learns from.
+
+    ``training_symbol`` is the price series the dataset, the leakage suite and
+    the backtest use. BTCUSDC on Binance starts in 2024 here and was delisted
+    from 2022-09 to 2023-03; BTCUSDT is continuous from 2017-08 and trades
+    within basis points of it, so it gives the model about four times the
+    history (the risk model's ``data_symbol`` exists for the same reason).
+    Set it to the traded symbol to learn from the traded pair only.
+    """
+
     root: str = "data"
     compression: str = "zstd"
+    training_symbol: str = "BTCUSDT"
 
 
 @dataclass(frozen=True)
@@ -305,6 +316,12 @@ class AppConfig:
     @property
     def index_path(self) -> Path:
         return self.data_root / f"index-{self.exchange.symbol}-{self.exchange.interval}.sqlite"
+
+    def training_market(self) -> "AppConfig":
+        """This config pointed at the series the 5-minute model learns from
+        (``data.training_symbol``): its bar store, index and top-ups."""
+        symbol = self.data.training_symbol or self.exchange.symbol
+        return replace(self, exchange=replace(self.exchange, symbol=symbol))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

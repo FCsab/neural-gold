@@ -12,13 +12,24 @@ comfortable answer.
 
 1. Loads the model's checkpoint and rebuilds the exact split it was trained on.
 2. Scores the most recent 15% of the data — rows the model never saw.
-3. Turns every long signal into a trade:
+3. Buys only where the model expects the trade to pay for itself (the
+   *expected-value rule*, the default since 2026-11-06):
+   `p(up) × target + p(stop) × stop − round-trip cost > 0`, using that bar's
+   own target and stop (fixed at its close) and probabilities with the
+   training class weights divided back out. The old rule, "buy whenever up is
+   the likeliest outcome", is still available as `entry_rule: "argmax"`; it
+   ignores costs and is how a BTCUSDC model that beat guessing (41% vs 33%)
+   made 3,043 trades and lost 99.9% in 3.5 months. The estimate is slightly
+   generous (a gap through the stop fills worse than the stop), so a rule
+   that barely clears zero has no real margin. Zero trades is a valid answer:
+   it means the model never expected to beat costs.
+4. Turns every buy signal into a trade:
    - **entry** at the next bar's open (you cannot trade at a close that has
      already printed),
    - **exit** at the price the label recorded: the barrier that was hit, or the
      timeout close,
    - **fees** (10 bps) and **slippage** (2 bps) charged on both sides.
-4. Compounds the result into an equity curve and compares it with simply
+5. Compounds the result into an equity curve and compares it with simply
    holding the asset over the same window.
 
 One position at a time, long only, all-in by default. Costs are configurable

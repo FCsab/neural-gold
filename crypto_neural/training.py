@@ -361,6 +361,9 @@ def train_model(
             "window": window,
             "scaler": {"mean": mean.tolist(), "std": std.tolist()},
             "label_order": list(CLASSES),
+            # The loss weights, so predict_proba can undo what they do to the
+            # probabilities (see there).
+            "class_weights": [float(w) for w in weights],
             "metrics": extra_metrics,
             "epoch": int(epoch_number),
             "torch_version": torch.__version__,
@@ -635,11 +638,20 @@ def predict_proba(
     row_indices: np.ndarray,
     *,
     batch_size: int = 512,
+    undo_class_weights: bool = True,
 ) -> np.ndarray:
     """Probabilities for ``row_indices`` of ``frame``, in the given order.
 
     Applies the scaler stored in the checkpoint, so the numbers match what the
     model saw during training. Rows must have a full window behind them.
+
+    Training weights each class by its rarity, which is right for learning a
+    rare class but bends the outputs: the weighted loss is minimised by
+    ``q(c) ∝ w(c) * p(c)``, so rare outcomes come out too likely. Anything
+    that prices a trade from these numbers needs ``p(c) ∝ q(c) / w(c)``,
+    which is what ``undo_class_weights`` returns. The argmax-based accuracy
+    metrics are measured on the weighted outputs, as trained. Checkpoints
+    written before the weights were stored come back uncorrected.
     """
     feature_names = list(checkpoint["feature_names"])
     window = int(checkpoint["window"])
@@ -678,4 +690,9 @@ def predict_proba(
 
     if not batches:
         return np.zeros((0, len(CLASSES)), dtype=np.float32)
-    return np.concatenate(batches)
+    probabilities = np.concatenate(batches)
+    weights = checkpoint.get("class_weights")
+    if undo_class_weights and weights:
+        probabilities = probabilities / np.asarray(weights, dtype=np.float32)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+    return probabilities

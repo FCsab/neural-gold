@@ -125,6 +125,14 @@ def run_verify(config: AppConfig, ctx) -> dict[str, Any]:
     return payload
 
 
+def _no_training_bars(market: AppConfig) -> str:
+    symbol = market.exchange.symbol
+    return (
+        f"no {symbol} {market.exchange.interval} bars stored; download them once with: "
+        f"CRYPTONEURAL_EXCHANGE_SYMBOL={symbol} crypto-neural backfill --start 2017-08-17"
+    )
+
+
 def run_dataset_build(
     config: AppConfig,
     features_cfg: FeatureConfig,
@@ -133,13 +141,19 @@ def run_dataset_build(
     ctx,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    store = store_from_config(config)
+    market = config.training_market()
+    if market.exchange.symbol != config.exchange.symbol:
+        # Nothing else keeps the training series current: "Update data"
+        # downloads the traded pair only.
+        ctx.message(f"fetching the newest {market.exchange.symbol} bars")
+        top_up_bars(market, ctx.log)
+    store = store_from_config(market)
 
     ctx.message("loading bars from Parquet")
     bars = store.load_bars()
     if bars.empty:
-        raise RuntimeError("no bars stored; run a backfill first")
-    ctx.log(f"{len(bars):,} bars loaded")
+        raise RuntimeError(_no_training_bars(market))
+    ctx.log(f"{len(bars):,} {market.exchange.symbol} bars loaded")
     ctx.progress(0.15, "building features and labels")
 
     dataset = build_dataset(bars, features_cfg, labels_cfg)
@@ -174,6 +188,7 @@ def run_dataset_build(
             "ambiguity": labels_cfg.ambiguity,
             "feature_lag": features_cfg.feature_lag,
         },
+        "symbol": market.exchange.symbol,
         "path": str(out),
         "elapsed_s": round(time.monotonic() - started, 2),
     }
@@ -187,10 +202,10 @@ def preview_labels(
     labels_cfg: LabelConfig,
     ctx,
 ) -> dict[str, Any]:
-    store = store_from_config(config)
-    bars = store.load_bars()
+    market = config.training_market()
+    bars = store_from_config(market).load_bars()
     if bars.empty:
-        raise RuntimeError("no bars stored; run a backfill first")
+        raise RuntimeError(_no_training_bars(market))
 
     ctx.message("labelling bars")
     labels = label_triple_barrier(bars, labels_cfg)
@@ -224,10 +239,11 @@ def run_leakage(
     samples: int,
     ctx,
 ) -> dict[str, Any]:
-    store = store_from_config(config)
-    bars = store.load_bars()
+    # The suite checks the series the model actually learns from.
+    market = config.training_market()
+    bars = store_from_config(market).load_bars()
     if bars.empty:
-        raise RuntimeError("no bars stored; run a backfill first")
+        raise RuntimeError(_no_training_bars(market))
 
     ctx.message("running leakage checks")
     report = run_leakage_suite(bars, features_cfg, labels_cfg, samples=samples)
@@ -699,13 +715,15 @@ def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
 
     ctx.progress(0.25, f"scoring {len(rows):,} rows with {model['name']}")
     probabilities = training_module.predict_proba(checkpoint, frame, rows)
-    prepared = prepare_backtest_frame(frame, rows, open_price_lookup(config))
+    # Entries fill at the next open of the series the dataset was built from.
+    prepared = prepare_backtest_frame(frame, rows, open_price_lookup(config.training_market()))
 
     backtest_config = BacktestConfig(
         initial_equity=float(params.get("initial_equity", 10_000.0)),
         fee_bps=float(params.get("fee_bps", 10.0)),
         slippage_bps=float(params.get("slippage_bps", 2.0)),
         min_confidence=float(params.get("min_confidence", 0.0)),
+        entry_rule=str(params.get("entry_rule", "expected_value")),
     )
 
     ctx.progress(0.7, "simulating trades")
@@ -722,6 +740,7 @@ def run_backtest(config: AppConfig, params: dict[str, Any], ctx) -> dict[str, An
         "fee_bps": backtest_config.fee_bps,
         "slippage_bps": backtest_config.slippage_bps,
         "min_confidence": backtest_config.min_confidence,
+        "entry_rule": backtest_config.entry_rule,
     }
     payload["slice"] = {
         "rows": int(len(rows)),

@@ -18,7 +18,9 @@ new work. On BTC the same held: direction unpredictable, short-horizon crash
 risk predictable (AUC 0.65), an MLP equal to LightGBM and their average
 better, and still no exit or sizing rule beat holding. BTCUSDC has a 164-day
 listing gap (2022-09 → 2023-03), so the risk model learns from BTCUSDT
-(`risk.data_symbol`). The risk job imports PyTorch only in a child process;
+(`risk.data_symbol`); the 5-minute transformer does the same through
+`data.training_symbol` (default BTCUSDT), and its backtest buys only when the
+expected gain covers the round-trip cost. The risk job imports PyTorch only in a child process;
 keep it out of the server process.
 
 **Current scope: step 1 (data layer) is complete; step 2 is partial** — one
@@ -36,7 +38,7 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # training only
 .venv/bin/python run.py                    # HTTP UI + API on https://<lan-ip>:8443/
-.venv/bin/pytest                           # 164 tests, no network
+.venv/bin/pytest                           # 172 tests, no network
 ```
 
 Headless equivalents (use these in CI, cron, and agent verification):

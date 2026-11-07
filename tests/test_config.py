@@ -71,3 +71,17 @@ def test_example_config_loads():
     cfg = load_config("config.example.yaml")
     assert cfg.exchange.symbol == "BTCUSDC"
     assert cfg.features.feature_lag == 1
+
+
+def test_the_model_learns_from_the_training_symbol_by_default():
+    from crypto_neural.config import AppConfig, DataConfig
+
+    config = AppConfig()
+    market = config.training_market()
+    assert market.exchange.symbol == "BTCUSDT"
+    assert market.bars_dir.parts[-2:] == ("BTCUSDT", "5m")
+    # Everything else, including what is traded, is unchanged.
+    assert config.exchange.symbol == "BTCUSDC"
+    assert market.data == config.data and market.labels == config.labels
+    same = AppConfig(data=DataConfig(training_symbol="BTCUSDC")).training_market()
+    assert same.exchange.symbol == "BTCUSDC"

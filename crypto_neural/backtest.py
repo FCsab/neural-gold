@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 DAY_MS = 86_400_000
+ENTRY_RULES = ("expected_value", "argmax")
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,11 @@ class BacktestConfig:
     slippage_bps: float = 2.0
     # 0.0 = take every long signal. The plan's live default is 0.55.
     min_confidence: float = 0.0
+    # "expected_value": buy only when the probabilities, applied to this bar's
+    # own target and stop, expect more than the round-trip cost. "argmax":
+    # buy whenever "up" is the likeliest outcome, which ignores costs; it is
+    # how a 41%-accurate model made 3,043 trades and lost 99.9% on BTCUSDC.
+    entry_rule: str = "expected_value"
     position_fraction: float = 1.0
     annualisation_days: float = 365.0
 
@@ -46,6 +52,8 @@ class BacktestConfig:
             raise ValueError("min_confidence must be within [0, 1)")
         if not 0.0 < self.position_fraction <= 1.0:
             raise ValueError("position_fraction must be within (0, 1]")
+        if self.entry_rule not in ENTRY_RULES:
+            raise ValueError(f"entry_rule must be one of {ENTRY_RULES}")
 
 
 @dataclass
@@ -162,6 +170,11 @@ def run_backtest(
 
     fee = config.fee_bps / 10_000.0
     slip = config.slippage_bps / 10_000.0
+    edge = expected_edge(frame, probabilities, 2.0 * (fee + slip))
+    if config.entry_rule == "expected_value":
+        signal = edge > 0.0
+    else:
+        signal = predictions == 1
 
     equity = float(config.initial_equity)
     peak = equity
@@ -185,7 +198,7 @@ def run_backtest(
     while i < rows:
         entry_ok = np.isfinite(entry_price[i]) and entry_price[i] > 0
         exit_ok = np.isfinite(exit_price[i]) and exit_price[i] > 0
-        if predictions[i] != 1 or confidence[i] < config.min_confidence or not (entry_ok and exit_ok):
+        if not signal[i] or confidence[i] < config.min_confidence or not (entry_ok and exit_ok):
             i += 1
             continue
 
@@ -274,6 +287,10 @@ def run_backtest(
         "fees_bps": config.fee_bps,
         "slippage_bps": config.slippage_bps,
         "min_confidence": config.min_confidence,
+        "entry_rule": config.entry_rule,
+        # How many bars the rule would have bought, before the one-position-
+        # at-a-time limit; zero means the model never expected to beat costs.
+        "signals": int(np.count_nonzero(signal)),
         "exposure": round(
             float(min(1.0, sum(trade.holding_bars for trade in trades) / max(1, rows))), 4
         ),
@@ -291,9 +308,46 @@ def run_backtest(
     return BacktestResult(trades=trades, equity_curve=curve, metrics=metrics)
 
 
+def expected_edge(
+    frame: pd.DataFrame, probabilities: np.ndarray, round_trip_cost: float
+) -> np.ndarray:
+    """Expected net return of buying each bar, from its class probabilities.
+
+    ``p(up) * (target - close) / close + p(stop) * (stop - close) / close``,
+    a timeout counted as zero, minus the round trip. The target and stop are
+    the bar's own barriers, fixed at its close, so nothing here looks past
+    the moment of the decision. The estimate is a little generous: a gap
+    through the stop fills at the open, worse than the stop, and the entry is
+    the next open, not this close. NaN (no barriers) means "do not trade".
+
+    Without barrier columns the edge cannot be judged, so it is NaN for every
+    row and the expected-value rule never trades.
+    """
+    if not {"barrier_up", "barrier_down", "close"} <= set(frame.columns):
+        return np.full(len(frame), np.nan)
+    close = frame["close"].to_numpy(dtype=np.float64)
+    gain = frame["barrier_up"].to_numpy(dtype=np.float64) / close - 1.0
+    loss = frame["barrier_down"].to_numpy(dtype=np.float64) / close - 1.0
+    p_stop, p_up = probabilities[:, 0], probabilities[:, 2]
+    with np.errstate(invalid="ignore"):
+        return p_up * gain + p_stop * loss - round_trip_cost
+
+
 def verdict(metrics: dict[str, Any]) -> dict[str, Any]:
     """Turn the numbers into one sentence a human can act on."""
     trades = metrics.get("trades", 0)
+    if not trades and metrics.get("entry_rule") == "expected_value":
+        cost_bps = (metrics.get("round_trip_cost") or 0.0) * 10_000
+        hold = metrics.get("buy_hold_return") or 0.0
+        return {
+            "tone": "warn",
+            "text": (
+                "No trades: on no bar did the model expect a trade to earn more than "
+                f"the {cost_bps:.0f} bps a round trip costs, so it stayed out. Holding "
+                f"BTC returned {hold * 100:+.1f}% over the same window. Staying out "
+                "is the right call for a model with no edge after costs."
+            ),
+        }
     if not trades:
         return {
             "tone": "warn",
@@ -395,5 +449,7 @@ def prepare_backtest_frame(frame, rows, open_by_time: dict[int, float]):
             "holding_bars": sliced["holding_bars"].to_numpy(dtype=np.int64),
             "label": sliced["label"].to_numpy(dtype=np.int64),
             "close": sliced["close"].to_numpy(dtype=np.float64),
+            "barrier_up": sliced["barrier_up"].to_numpy(dtype=np.float64),
+            "barrier_down": sliced["barrier_down"].to_numpy(dtype=np.float64),
         }
     )

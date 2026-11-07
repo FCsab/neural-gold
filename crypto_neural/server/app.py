@@ -88,6 +88,7 @@ class BacktestParams(BaseModel):
     fee_bps: float = Field(default=10.0, ge=0, le=100)
     slippage_bps: float = Field(default=2.0, ge=0, le=100)
     min_confidence: float = Field(default=0.0, ge=0, lt=1)
+    entry_rule: Literal["expected_value", "argmax"] = "expected_value"
 
 
 class TrainParams(BaseModel):

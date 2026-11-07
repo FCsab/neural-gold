@@ -91,7 +91,9 @@
     <h2>Train and test a model</h2>
     <p class="hint">Each bar is labelled by what happened next: price reached the target,
       hit the stop, or did neither in time. The model learns to predict that from past
-      bars, then trades the newest 15% of the data it never saw.</p>
+      bars, then trades the newest 15% of the data it never saw. It learns from BTC/USDT
+      history since 2017, which moves with BTC/USDC but is four times longer, and it only
+      buys when it expects the gain to cover the fees and slippage.</p>
     <form id="train-form" class="fields">
       <label>Profit target
         <input id="k-up" type="number" step="0.1" min="0.1" max="20" value="2.0" />

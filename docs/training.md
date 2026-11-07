@@ -79,7 +79,14 @@ unless you actually train.
 
 ## Data and splits
 
-Training reads `data/dataset.parquet`, built by the dataset step (`cli dataset`, or “Train and test” in the web UI). Feature
+Training reads `data/dataset.parquet`, built by the dataset step (`cli dataset`, or “Train and test” in the web UI), from the
+bars of `data.training_symbol`: **BTCUSDT by default**, continuous from
+2017-08 (about 960k five-minute bars), not BTCUSDC, which starts in 2024 here
+(210k bars). The two trade within basis points of each other. The first
+version learned from BTCUSDC alone and stopped improving on validation after
+about 4 epochs, which is what too little data looks like. Download the history
+once with `CRYPTONEURAL_EXCHANGE_SYMBOL=BTCUSDT crypto-neural backfill --start
+2017-08-17`; each dataset build then fetches the newest bars itself. Feature
 names come from `data/reports/dataset.json`, falling back to the parquet
 schema.
 
@@ -88,7 +95,10 @@ schema.
 - Standardisation statistics come from the **training slice only** and are
   stored in the checkpoint.
 - Class weights are computed from the training slice, so the majority
-  "stop" class does not dominate the loss.
+  "stop" class does not dominate the loss. They are stored in the checkpoint
+  because they bend the output probabilities (rare outcomes come out too
+  likely); `predict_proba` divides them back out before the backtest prices a
+  trade from those probabilities.
 
 Windows are gathered with `sliding_window_view`, so a 210k-row dataset is a
 view, not a 1 GB copy.

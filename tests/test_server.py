@@ -14,8 +14,10 @@ from .conftest import small_risk_config, synthetic_bars
 
 @pytest.fixture()
 def config(tmp_path) -> AppConfig:
+    # The model learns from the traded pair here: the fixtures store one
+    # series, and a different training symbol would reach for the network.
     return AppConfig(
-        data=DataConfig(root=str(tmp_path / "data")),
+        data=DataConfig(root=str(tmp_path / "data"), training_symbol="BTCUSDC"),
         server=ServerConfig(tls_enabled=False),
     )
 

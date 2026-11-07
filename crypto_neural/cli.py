@@ -46,8 +46,10 @@ def _load_bars(config: AppConfig) -> pd.DataFrame:
     store = store_from_config(config)
     bars = store.load_bars()
     if bars.empty:
+        symbol = config.exchange.symbol
         raise SystemExit(
-            "no bars stored yet; run: python -m crypto_neural.cli backfill --years 2"
+            f"no {symbol} bars stored yet; run: CRYPTONEURAL_EXCHANGE_SYMBOL={symbol} "
+            "python -m crypto_neural.cli backfill --start 2017-08-17"
         )
     return bars
 
@@ -125,7 +127,7 @@ def cmd_exchange_info(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 def cmd_dataset(args: argparse.Namespace, config: AppConfig) -> int:
-    bars = _load_bars(config)
+    bars = _load_bars(config.training_market())
     dataset = build_dataset(bars, config.features, config.labels)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +148,7 @@ def cmd_dataset(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 def cmd_labels(args: argparse.Namespace, config: AppConfig) -> int:
-    bars = _load_bars(config)
+    bars = _load_bars(config.training_market())
     labels = label_triple_barrier(bars, config.labels)
     distribution = label_distribution(labels)
     print(f"bars: {len(bars):,}  labelled: {int(labels['valid'].sum()):,}")
@@ -163,7 +165,7 @@ def cmd_labels(args: argparse.Namespace, config: AppConfig) -> int:
 
 
 def cmd_leakage(args: argparse.Namespace, config: AppConfig) -> int:
-    bars = _load_bars(config)
+    bars = _load_bars(config.training_market())
     report = run_leakage_suite(
         bars, config.features, config.labels, samples=args.samples
     )
