@@ -378,3 +378,35 @@ If 2 to 4 hold for EWMA-sized but 1 fails, the result is that sizing works
 and the model adds nothing over a formula. That still counts as a result,
 reported as such. It runs once. No other spans, horizons, bands or targets
 get tried on this period.
+
+### Volatility sizing: result (run once, 2026-11-07)
+
+`cli volsize`, BTCUSDT 4h, out of sample 2018-08-27 → 2026-10-15 (8.1 years,
+33 blocks), 10 + 2 bps per side. Report: `data/reports/volsizing.json`.
+
+| | per year | worst drop | Sharpe | exposure | placebo p |
+|---|---|---|---|---|---|
+| hold | +35.9% | 77.0% | 0.81 | 100% | |
+| EWMA-sized | +27.3% | 74.2% | 0.74 | 89% | 0.74 |
+| model-sized | +29.1% | 74.8% | 0.77 | 90% | 0.52 |
+
+| criterion | result |
+|---|---|
+| 1. model forecasts better than EWMA | **yes**: MSE 0.329 vs 0.409, better in 32 of 33 blocks |
+| 2. Sharpe above hold and EWMA | no (0.77 vs 0.81) |
+| 3. worst drop below hold | yes, by 2 points |
+| 4. timing beats chance | no (p = 0.52) |
+
+**By the pre-registered rule it does not work.** What it does show:
+
+- **The volatility forecast is real skill.** LightGBM beats the EWMA formula
+  almost every quarter for eight years. This is the strongest out-of-sample
+  result in the project, and it is a forecast of magnitude, not direction.
+- **Turning it into sizing does not beat holding BTC.** Cutting exposure
+  before turbulent days gave up more return than it saved in drawdown. On
+  BTC the turbulent stretches include the large rallies, so holding less
+  when volatility is high misses them as often as it misses the crashes.
+  The "volatility-managed portfolio" effect seen in equities did not show up
+  here.
+- Nothing changes in the defaults. As registered, no other spans, horizons,
+  bands or targets will be tried on this period.
