@@ -212,7 +212,8 @@ those values, and any future execution layer must re-fetch hourly.
 2. If you touched features, labels, dataset, or leakage: `cli leakage` reports
    PASS and exits 0.
 3. If you touched the server or the UI: `scripts/smoke.py` against a running
-   `run.py` reports 11/11, or you state which check you could not run and why.
+   `run.py` reports all 10 checks (12 with `--leakage`), or you state which
+   check you could not run and why.
 4. Metrics are reported as measured, including the baseline they are compared
    against. A model that loses to "always guess the majority class" is recorded
    as `draft`, not promoted.

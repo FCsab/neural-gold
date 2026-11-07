@@ -71,6 +71,15 @@ def main(argv: list[str] | None = None) -> int:
         if bars:
             check("candles are ordered", bars == sorted(bars, key=lambda b: b["time"]))
 
+        paper = client.get("/api/paper", headers=headers)
+        body = paper.json() if paper.status_code == 200 else {}
+        # A scored record carries the live-order gate; an empty one says why not.
+        check(
+            "paper record served",
+            bool(body.get("verdict")) and ("gate" in body or not body.get("days")),
+            str(body)[:200],
+        )
+
         job_id = client.post("/api/data/verify", headers=headers, json={}).json()["job_id"]
         job = wait_for_job(client, headers, job_id)
         check("verify job completed", job["status"] == "ok", str(job.get("error")))
